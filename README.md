@@ -1,9 +1,9 @@
 ELL: Embedded Linux Loader
 ==========================
 
-A x86 single sector Linux bootloader.
+An x86 single sector Linux bootloader.
 
-It does not support initrd, and the kernel command line is limited 48 bytes.
+It does not support initrd, and the kernel command line is limited to 48 bytes.
 
 Uses ah=0x02 for int13 disk reads (my olden boxen won't do 0x42)
 
@@ -75,7 +75,8 @@ To build, you need to:
 
 4. Go back to step 2, until it all assembles within the tiny space.
 
-5. "dd" the mbr image directly to the boot media.
+5. "dd" the mbr image directly to the boot media:
+   "dd if=mbr of=/dev/sd?"
 
 6. Using hexedit (carefully) or scripting "dd" magic on the boot disk,
    insert your kernel command line to the 48 bytes at offset 0x1cd.
@@ -83,6 +84,8 @@ To build, you need to:
    incremented when booting from the second kernel partition, so the
    "root=" command must be last. The 49th byte (at 0x1fd) is the NULL
    string terminator, follwed by the 0x55aa signature at 0x1fe.
+   "echo '                                  root=/dev/sd?3' | dd of=/dev/sd? seek=461 bs=1  count=48
+   "dd if=/dev/zero of=/dev/sd? bs=1 count=1 seek=509"
 
 7. The media should now be bootable.
 
