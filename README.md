@@ -86,7 +86,7 @@ To build, you need to:
    "root=" command must be last. The 49th byte (at 0x1fd) is the NULL
    string terminator, follwed by the 0x55aa signature at 0x1fe.
 
-   "echo '\"                                  root=/dev/sd?3' | dd of=/dev/sd? seek=461 bs=1  count=48"
+   "echo '                                  root=/dev/sd?3' | dd of=/dev/sd? seek=461 bs=1  count=48"
    (NOTE: that is exactly 48 alphanumeric characters between the single quotes above)
    
    "dd if=/dev/zero of=/dev/sd? bs=1 count=1 seek=509"
