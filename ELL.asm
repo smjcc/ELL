@@ -105,7 +105,7 @@
 	%define	CHECKKERNELSIG		; R(15) check the kernel signature
 	%define	ERRORCODES		; R(16) show single letter error codes
 	%define	PROGRESS		; R(30) shows loader progress on console
-	%define KERNELVERSIONSTRING	; R(21) shows kernel version string
+;;;	%define KERNELVERSIONSTRING	; R(21) shows kernel version string
 	%define	ONETIMEBOOT		; R(53) support ELL_flags one-time boot
 ;;;	%define	A20CHECK		; R(19) verify A20 is enabled
 ;;;	%define	A20CHECKDELAY		; R delay before verifying A20 enabled
@@ -120,7 +120,7 @@
 ;;;	%define	CHECKBIOSEXT		; D() check BIOS int13 ah=4x support
 ;;;	%define	CHECKBIOSCHSLIMITS	; D() hack brute force limits discovery
 ;;;	%define BLOCKS64		; in case 128 doesn't work for you.
-;;;	%define AVOIDINT21		; D(10) else use int 0x21 for print_al
+;;;	%define PRINTINT	0x21	; D(buggy) use int instr for print_al
 ;;;
 ;;; LOADWHOLEPARTITION loads the entire kernel partition, instead
 ;;; of honoring the kernel paragraph size info, this code is smaller.
@@ -220,17 +220,13 @@ org	0x7c00
 	mov	ss, ax
 	mov	ds, ax
 
-%ifndef	AVOIDINT21
-	;; set int 0x21 to point to call print_al
+%ifdef	PRINTINT	 ;kernel is unhappy with this....
+	;; set int PRINTINT to point to call print_al
 	;; because int is one byte smaller than call
-	mov	[0x021*4], print_al
-;;;	mov	word [0x021*4], ax
-;;;	mov	word [0x021*4+2], print_al ;doggy-doggy
-;;;	mov	ax, print_al
-;;;	mov	[0x021*4], eax
-%endif
+	mov	word [PRINTINT*4+2], ax
+	mov	word [PRINTINT*4], print_al
+%endif	;PRINTINT
 
-;;;	mov	es, ax		; would be crashed by check_a20 anyway
 ;;;	cld			; dog do we need this?
 ;;; save the boot device number passed from the BIOS
 	mov	byte [boot_drive], dl
@@ -243,11 +239,11 @@ org	0x7c00
 
 %ifdef	PROGRESS
 	mov	al, OURNAME1	; the boot loader has started
-	%ifdef	AVOIDINT21
-	call	print_al
+	%ifdef	PRINTINT
+	int	PRINTINT	; print_al
 	%else
-	int	0x21		; print_al
-	%endif	;AVOIDINT21
+	call	print_al
+	%endif	;PRINTINT
 %endif	;PROGRESS
 
 ;;; ====================================================
@@ -343,11 +339,7 @@ org	0x7c00
 	call	print_dx_hex
 
 	mov	al, '!'
-	%ifdef	AVOIDINT21
 	call	print_al
-	%else
-	int	0x21		; print_al
-	%endif	;AVOIDINT21
 	jmp	$
 ;;; 	---------
 %endif	;CHECKBIOSCHSLIMITS
@@ -508,11 +500,11 @@ org	0x7c00
 ;;; now in UNREAL mode
 	%ifdef	PROGRESS
 	mov	al, OURNAME2	; A20 and UNREAL achieved
-	%ifdef	AVOIDINT21
+	 %ifdef	PRINTINT
+	int	PRINTINT	; print_al
+	 %else
 	call	print_al
-	%else
-	int	0x21		; print_al
-	%endif	;AVOIDINT21
+	 %endif	;PRINTINT
 	%endif	;PROGRESS
 
 ;;; load the MBR, and GPT (LBA0, LBA1, and LBA2)
@@ -520,14 +512,14 @@ org	0x7c00
 	mov	dl, 3		; three sectors (LBA0-LBA2)
 	mov	bx, MBR		; offset (in es which is 0x0000)
 	call	disk_read	; load first three sectors into 0:MBR
-%ifdef	PROGRESS
+	%ifdef	PROGRESS
 	mov	al, OURNAME3	; GPT loaded
-	%ifdef	AVOIDINT21
+	 %ifdef	PRINTINT
+	int	PRINTINT	; print_al
+	 %else
 	call	print_al
-	%else
-	int	0x21		; print_al
-	%endif	;AVOIDINT21
-%endif	;PROGRESS
+	 %endif	;PRINTINT
+	%endif	;PROGRESS
 
 %ifdef	CHECKGPTSIG
 	.CHECKGPTSIG:
@@ -535,7 +527,8 @@ org	0x7c00
 	mov	al, GPTSIGERR
 %endif	;ERRORCODES
 ;;; 	cmp	dword [GPT_sig], 'EFI '
-	cmp	word [GPT_sig+2], 'I ' ;dog save three bytes
+;;;	cmp	word [GPT_sig+2], 'I ' ;dog save three bytes
+	cmp	byte [GPT_sig], 'E' ;dog save four bytes
 	jne	err_al
 	%ifdef	REPORTSIZES
 	%assign	size $-.CHECKGPTSIG
@@ -598,11 +591,11 @@ org	0x7c00
 
 .part1:
 	%ifdef PROGRESS
-	%ifdef	AVOIDINT21
+	 %ifdef	PRINTINT
+	int	PRINTINT	; print_al
+	 %else
 	call	print_al
-	%else
-	int	0x21		; print_al
-	%endif	;AVOIDINT21
+	 %endif	;PRINTINT
 	%endif ;PROGRESS
 	%ifdef	REPORTSIZES
 	%assign	size $-.ONETIMEBOOT
@@ -620,11 +613,11 @@ org	0x7c00
 
 %ifdef	PROGRESS
 	mov	al, OURNAME4	; kernel realmode code loaded
-	%ifdef	AVOIDINT21
-	call	print_al
+	%ifdef	PRINTINT
+	int	PRINTINT	; print_al
 	%else
-	int	0x21		; print_al
-	%endif	;AVOIDINT21
+	call	print_al
+	%endif	;PRINTINT
 %endif	;PROGRESS
 
 	push	ds		;0x0000
@@ -634,7 +627,8 @@ org	0x7c00
 %ifdef	CHECKKERNELSIG
 	.CHECKKERNELSIG:
 ;;;	cmp	dword [0x202], 'HdrS' ;signature
-	cmp	word [0x202+2], 'rS' ;signature dog save three bytes
+;;;	cmp	word [0x202+2], 'rS' ;signature dog save three bytes
+	cmp	byte [0x202], 'H' ;signature dog save four bytes
 %ifdef	ERRORCODES
 	mov	al, KSIGERR
 %endif	;ERRORCODES
@@ -758,11 +752,13 @@ org	0x7c00
 	mov	[highmove_addr], edi
 %ifdef	PROGRESS
 	mov	al, '.'
-	%ifdef	AVOIDINT21
-	call	print_al
+	%ifdef	PRINTINT
+	pusha
+	int	PRINTINT	; print_al
+	popa
 	%else
-	int	0x21		; print_al
-	%endif	;AVOIDINT21
+	call	print_al
+	%endif	;PRINTINT
 %endif	;PROGRESS
 	pop	ax
 	%ifdef	BLOCKS64
@@ -780,11 +776,11 @@ org	0x7c00
 
 %ifdef	PROGRESS
 	mov	al, KLAUNCH	; starting the Kernel
-	%ifdef	AVOIDINT21
-	call	print_al
+	%ifdef	PRINTINT
+	int	PRINTINT	; print_al
 	%else
-	int	0x21		; print_al
-	%endif	;AVOIDINT21
+	call	print_al
+	%endif	;PRINTINT
 %endif	;PROGRESS
 kernel_start:
 	cli
@@ -804,19 +800,19 @@ kernel_start:
 
 err_al:
 	%ifdef ERRORCODES
-	%ifdef	AVOIDINT21
+	 %ifdef	PRINTINT
+	int	PRINTINT	; print_al
+	 %else
 	call	print_al
-	%else
-	int	0x21		; print_al
-	%endif	;AVOIDINT21
+	 %endif	;PRINTINT
 	%else
 	 %ifdef PROGRESS
 	mov	al, '!'		;if PROGRESS, then print_al, so show anon err
-	%ifdef	AVOIDINT21
+	  %ifdef PRINTINT
+	int	PRINTINT	; print_al
+	  %else
 	call	print_al
-	%else
-	int	0x21		; print_al
-	%endif	;AVOIDINT21
+	  %endif ;PRINTINT
 	 %endif	;PROGRESS
 	%endif 	;ERRORCODES
 err:	jmp	short $		;hang forever
@@ -831,11 +827,11 @@ print_string:
 	or	al, al
 	jz	short return
 
-	%ifdef	AVOIDINT21
-	call	print_al
+	%ifdef	PRINTINT
+	int	PRINTINT	; print_al
 	%else
-	int	0x21		; print_al
-	%endif	;AVOIDINT21
+	call	print_al
+	%endif	;PRINTINT
 	jmp	short print_string
 ;;; 	-------------
 	%ifdef	REPORTSIZES
