@@ -40,7 +40,7 @@
 ;;; partition 3 as root cramfs, or kernel in partition 2, mounting
 ;;; partition 4 as root cramfs.
 ;;; 
-;;; This gives us two complete system copies.y
+;;; This gives us two complete system copies.
 ;;;
 ;;; This allows us to upgrade the kernel and root filesystem,
 ;;; (via busybox "dd" of the kernel and cramfs into two partitions)
@@ -100,13 +100,13 @@
 ;;; the 'R' means recommended, 'D' means diagnostic only
 ;;; 	'?' means hardware specific '(n)' is the bytes added (last I checked)
 
-	%define REPORTSIZES    		; R     report sizes of code blocks
-;;;	%define	GPTCHECK		; R(15) verify the GPT signature
-;;;	%define	CHECKKERNELSIG		; R(15) check the kernel signature
-	%define	ONETIMEBOOT		; R(55) support ELL_flags one-time boot
+	%define REPORTSIZES    		; R(0)  report sizes of code blocks
+	%define	CHECKGPTSIG		; R(15) verify the GPT signature
+	%define	CHECKKERNELSIG		; R(15) check the kernel signature
 	%define	ERRORCODES		; R(16) show single letter error codes
-	%define	PROGRESS		; R(38) shows loader progress on console
-;;;	%define KERNELVERSIONSTRING	; R(33) shows kernel version string
+	%define	PROGRESS		; R(30) shows loader progress on console
+	%define KERNELVERSIONSTRING	; R(21) shows kernel version string
+	%define	ONETIMEBOOT		; R(53) support ELL_flags one-time boot
 ;;;	%define	A20CHECK		; R(19) verify A20 is enabled
 ;;;	%define	A20CHECKDELAY		; R delay before verifying A20 enabled
 ;;;	%define	A20BY0XEE		; ? smallest A20 enabler
@@ -114,13 +114,14 @@
 ;;;	%define A20BYFASTGATESMALL	; ?
 ;;;	%define A20BYFASTGATESAFE	; ? bigger than above, but also checks
 ;;;	%define	A20CHECKEACH		; R check A20 after each set attempt
-;;;	%define	LOADWHOLEPARTITION	; D load the whole kernel partition
+;;;	%define	LOADWHOLEPARTITION	; D(-10) load the whole kernel partition
 ;;;	%define	DUMP			; D marginally useful subroutine
 ;;;	%define	HEXPRINT		; D(32) adds print_dx_hex subroutine
 ;;;	%define	CHECKBIOSEXT		; D() check BIOS int13 ah=4x support
 ;;;	%define	CHECKBIOSCHSLIMITS	; D() hack brute force limits discovery
 ;;;	%define BLOCKS64		; in case 128 doesn't work for you.
-;;; 
+;;;	%define AVOIDINT21		; D(10) else use int 0x21 for print_al
+;;;
 ;;; LOADWHOLEPARTITION loads the entire kernel partition, instead
 ;;; of honoring the kernel paragraph size info, this code is smaller.
 
@@ -189,7 +190,7 @@
 	%ifdef	DIAGNOSTICONLY
 	 %undef	ERRORCODES
 	 %undef	PROGRESS
-	 %undef	GPTCHECK
+	 %undef	CHECKGPTSIG
 	 %undef	CHECKKERNELSIG
 	 %undef	A20CHECK
  	 %undef	ONETIMEBOOT
@@ -213,20 +214,41 @@
 	[BITS 16]
 
 org	0x7c00
-;;; 	cli		;dog do I need this?
+;;; 	cli			; dog do we need this?
 	mov	sp, 0x7c00	; setup stack
 	xor	ax, ax
 	mov	ss, ax
 	mov	ds, ax
-	mov	es, ax
-	cld
+
+%ifndef	AVOIDINT21
+	;; set int 0x21 to point to call print_al
+	;; because int is one byte smaller than call
+	mov	[0x021*4], print_al
+;;;	mov	word [0x021*4], ax
+;;;	mov	word [0x021*4+2], print_al ;doggy-doggy
+;;;	mov	ax, print_al
+;;;	mov	[0x021*4], eax
+%endif
+
+;;;	mov	es, ax		; would be crashed by check_a20 anyway
+;;;	cld			; dog do we need this?
 ;;; save the boot device number passed from the BIOS
 	mov	byte [boot_drive], dl
 
+;;; Read Drive Parameters (ah=0x08) to get the sectors per head
+	mov	ah, 0x08
+	int	0x13
+	and	cl, 0x3f
+	mov	[secs_per_head], cl
+
 %ifdef	PROGRESS
 	mov	al, OURNAME1	; the boot loader has started
+	%ifdef	AVOIDINT21
 	call	print_al
-%endif  ;PROGRESS
+	%else
+	int	0x21		; print_al
+	%endif	;AVOIDINT21
+%endif	;PROGRESS
 
 ;;; ====================================================
 ;;; FOLLOWING %ifdef BLOCKS ARE OPTIONAL DIAGNOSTIC CODE
@@ -321,7 +343,11 @@ org	0x7c00
 	call	print_dx_hex
 
 	mov	al, '!'
+	%ifdef	AVOIDINT21
 	call	print_al
+	%else
+	int	0x21		; print_al
+	%endif	;AVOIDINT21
 	jmp	$
 ;;; 	---------
 %endif	;CHECKBIOSCHSLIMITS
@@ -459,7 +485,7 @@ org	0x7c00
 .a20_is_enabled:
 	lgdt	[gdt_desc]	;load the global/interupt descriptor table
 	mov	eax, cr0
-	or	eax, 1
+	or	al, 00000001b	; set protected mode bit
 	mov	cr0, eax	; enter protected mode
 	jmp	short $+2
 
@@ -468,8 +494,8 @@ org	0x7c00
 	mov	es, bx
 	mov	gs, bx
 
-	and	al, 0xFE 	; back to real mode
-	mov	cr0, eax
+	and	al, 11111110b	; clear protected mode bit
+	mov	cr0, eax	; back to real mode
 
 ;;; 	- now limits are removed but seg regs still work as normal
 
@@ -482,16 +508,12 @@ org	0x7c00
 ;;; now in UNREAL mode
 	%ifdef	PROGRESS
 	mov	al, OURNAME2	; A20 and UNREAL achieved
+	%ifdef	AVOIDINT21
 	call	print_al
+	%else
+	int	0x21		; print_al
+	%endif	;AVOIDINT21
 	%endif	;PROGRESS
-
-;;; Read Drive Parameters (ah=0x08) to get the sectors per head
-
-	mov	dl, [boot_drive]
-	mov	ah, 0x08
-	int	0x13
-	and	cl, 0x3f
-	mov	[secs_per_head], cl
 
 ;;; load the MBR, and GPT (LBA0, LBA1, and LBA2)
 	xor	ax, ax		; starting with LBA=0
@@ -500,50 +522,59 @@ org	0x7c00
 	call	disk_read	; load first three sectors into 0:MBR
 %ifdef	PROGRESS
 	mov	al, OURNAME3	; GPT loaded
+	%ifdef	AVOIDINT21
 	call	print_al
+	%else
+	int	0x21		; print_al
+	%endif	;AVOIDINT21
 %endif	;PROGRESS
 
-%ifdef	GPTCHECK
-	.GPTCHECK:
- 	cmp	dword [GPT_sig], 'EFI '
-;;;	cmp	word [GPT_sig+2], 'I ' ;dog save two bytes
+%ifdef	CHECKGPTSIG
+	.CHECKGPTSIG:
 %ifdef	ERRORCODES
 	mov	al, GPTSIGERR
 %endif	;ERRORCODES
+;;; 	cmp	dword [GPT_sig], 'EFI '
+	cmp	word [GPT_sig+2], 'I ' ;dog save three bytes
 	jne	err_al
 	%ifdef	REPORTSIZES
-	%assign	size $-.GPTCHECK
-	%warning "GPTCHECK" added size bytes
+	%assign	size $-.CHECKGPTSIG
+	%warning "CHECKGPTSIG" added size bytes
 	%endif	;REPORTSIZES
-%endif	;GPTCHECK
+%endif	;CHECKGPTSIG
 
 %ifdef	ONETIMEBOOT
 	.ONETIMEBOOT:
-	mov	al, byte [MBR_ELL_flags]
-	test	al, 00000010b ;one time boot?
+	mov	al, byte [MBR_ELL_flags] ;the disk copy of ELL_flags
+	test	al, 00000010b 		; is this a one time boot?
 	jz	short .default_partition
 
 ;;; if this is a one time boot, then clear the one time boot bit on disk
+;;; and switch to the "other" (not default) kernel partition
 
-	and	byte [MBR_ELL_flags], 11111101b ;clear the bit
+	and	byte [MBR_ELL_flags], 11111101b ;clear the one time bit
+;;;	and	al, 11111101b ;clear the bit	;same size code... meh...
+;;;	mov	byte [MBR_ELL_flags], al
 
+	push	ax
 	mov	bx, MBR		; offset
 	xor	cx, cx		;0 sec/trk
 	mov	dx, cx		;0 hd
 	inc	cl		;first sector is 1
 	mov	dl, [boot_drive]
 	mov	ax, 0x0301	;write one sector
-	int	0x13		;write the MBR sector back
+	int	0x13		;write the modified MBR sector back
 %ifdef	ERRORCODES
 	mov	al, LBA0WRITEERR
 %endif	;ERRORCODES
-	jc	err_al
+	jc	err_al	; doggy should this be an error? we could still boot..
 
-	mov	al, byte [MBR_ELL_flags]
-	xor	al, 1	;toggle the default kernel partition
+	pop	ax
+;;;	mov	al, byte [MBR_ELL_flags] ; push/pop is one byte smaller.
+	xor	al, 00000001b	;toggle the default kernel partition
 
 .default_partition:
-	test	al, 1
+	test	al, 00000001b	;which partition to load kernel from
 	%ifdef PROGRESS
 	mov	al, PART1
 	%endif ;PROGRESS
@@ -567,7 +598,11 @@ org	0x7c00
 
 .part1:
 	%ifdef PROGRESS
+	%ifdef	AVOIDINT21
 	call	print_al
+	%else
+	int	0x21		; print_al
+	%endif	;AVOIDINT21
 	%endif ;PROGRESS
 	%ifdef	REPORTSIZES
 	%assign	size $-.ONETIMEBOOT
@@ -579,13 +614,17 @@ org	0x7c00
 
 	push	0x1000
 	pop	es		; es=0x1000 ds=0x0000
-	mov	ax, [part1_FLBA]
+	mov	ax, [part1_FLBA] ; first LBA of partition one
 	mov	dl, 64		;maximum kernel header size of 32K (64 sectors)
 	call	disk_read0	;load the first 32K block of the kernel
 
 %ifdef	PROGRESS
 	mov	al, OURNAME4	; kernel realmode code loaded
+	%ifdef	AVOIDINT21
 	call	print_al
+	%else
+	int	0x21		; print_al
+	%endif	;AVOIDINT21
 %endif	;PROGRESS
 
 	push	ds		;0x0000
@@ -594,8 +633,8 @@ org	0x7c00
 
 %ifdef	CHECKKERNELSIG
 	.CHECKKERNELSIG:
-	cmp	dword [0x202], 'HdrS' ;signature
-;;; 	cmp	word [0x204], 'rS' ;signature dog save two bytes
+;;;	cmp	dword [0x202], 'HdrS' ;signature
+	cmp	word [0x202+2], 'rS' ;signature dog save three bytes
 %ifdef	ERRORCODES
 	mov	al, KSIGERR
 %endif	;ERRORCODES
@@ -610,19 +649,19 @@ org	0x7c00
 %ifdef	ERRORCODES
 	mov	al, KPROTOERR
 %endif	;ERRORCODES
-	jb	err_al			; must be 2.04 or greater
+	jb	err_al			; must be protocol v2.04 or greater
 
-	test	byte [0x211], 1 	; loadflags: boot protocol option flags
 %ifdef	ERRORCODES
 	mov	al, KLOADHIERR
 %endif	;ERRORCODES
+	test	byte [0x211], 1 	; loadflags: boot protocol option flags
  	jz	err_al			; error if not loaded high: 0x100000
 
 %ifdef	KERNELVERSIONSTRING
 	.KERNELVERSIONSTRING:
-	mov	esi, [0x20e]	; pointer to kernel version string
-	add	esi, 0x200	; minus kernel boot sector
-  	call	print_string	;print the kernel version string
+	mov	si, [0x20e]	; pointer to kernel version string
+	add	si, 0x200	; minus kernel boot sector
+	call	print_string	;print the kernel version string
 	%ifdef	REPORTSIZES
 	%assign	size $-.KERNELVERSIONSTRING
 	%warning "KERNELVERSIONSTRING" added size bytes
@@ -630,16 +669,18 @@ org	0x7c00
 %endif	;KERNELVERSIONSTRING
 ;;;
 ;;; 	obligatory kernel setup ( ds = es = 0x1000, 0x0000 on stack)
-;;; 
-	mov	byte [0x210], 0xe1	; set type_of_loader
+;;;
 %ifdef	ERRORCODES
-	;; set kernel quiet mode if ERRORCODES not enabled
-	mov	byte [0x211], 0x81	; set loadflags LOADHI+USEHEAP
+	mov	word [0x210], 0x81e1	; set LOADHI+USEHEAP+type_of_loader
 %else
-	mov	byte [0x211], 0xA1	; set loadflags LOADHI+USEHEAP+QUIET
+	;; set kernel quiet mode if ERRORCODES not enabled
+	mov	word [0x210], 0xa1e1	; set LOADHI+USEHEAP+type_of_loader
 %endif	;ERRORCODES
+
+;;; 	if you want play with initrd:
 ;;;	mov	dword [0x218], 0x0000 ;set ramdisk_image
 ;;;	mov	dword [0x21C], 0x0000 ;set ramdisk_size
+
 	mov	word [0x224], 0xde00	 ;set heap_end_ptr
 ;;;	mov	byte [0x226], 0x00	 ;set ext_loader_ver
 	mov	byte [0x227], 0x01	 ;set ext_loader_type / bootloader id 11
@@ -650,20 +691,15 @@ org	0x7c00
 ;;; copy cmd line
 	%ifdef	CMDLINE
 	mov	si, cmdLine
-	%endif	;CMDLINE
-	%ifdef	CMDLINE1CD
-	mov	si, command_line
-	%endif	;CMDLINE1CD
-	mov	di, 0xe000
-	%ifdef	CMDLINE
 	mov	cx, cmdLineLen
 	%endif	;CMDLINE
 	%ifdef	CMDLINE1CD
+	mov	si, command_line
 	mov	cx, 48+1	;command_line plus NULL terminator
 	%endif	;CMDLINE1CD
+	mov	di, 0xe000
 	rep	movsb ; copies from DS:si to ES:di (0x1e000)
 
-    ; modern kernels are bzImage ones (despite name on disk and so
     ; the protected mode part must be loaded at 0x100000
     ; load 128 sectors at a time to 0x2000, then copy to 0x100000
 
@@ -680,7 +716,7 @@ org	0x7c00
 	inc	edx		; +1 potentially partial group
 
 	mov	[load_counter], dx ;save the number of 128block groups to load
-%endif	;LOADWHOLEPARTITION
+%endif	;not LOADWHOLEPARTITION
  	mov 	al, [es:0x1f1] ; no of blocks in the kernel realmode header
  	or	al, al
  	jnz	short .notdefaultsize
@@ -711,7 +747,6 @@ org	0x7c00
 	%else
 	mov	edx, 512*128/4
 	%endif	;BLOCKS64
-;;; 	mov	ecx, 0 ; pointer (doggy?)
 .highloop:
 	mov	eax, [ds:esi]
 	mov	[ds:edi], eax
@@ -723,7 +758,11 @@ org	0x7c00
 	mov	[highmove_addr], edi
 %ifdef	PROGRESS
 	mov	al, '.'
+	%ifdef	AVOIDINT21
 	call	print_al
+	%else
+	int	0x21		; print_al
+	%endif	;AVOIDINT21
 %endif	;PROGRESS
 	pop	ax
 	%ifdef	BLOCKS64
@@ -741,7 +780,11 @@ org	0x7c00
 
 %ifdef	PROGRESS
 	mov	al, KLAUNCH	; starting the Kernel
+	%ifdef	AVOIDINT21
 	call	print_al
+	%else
+	int	0x21		; print_al
+	%endif	;AVOIDINT21
 %endif	;PROGRESS
 kernel_start:
 	cli
@@ -761,12 +804,20 @@ kernel_start:
 
 err_al:
 	%ifdef ERRORCODES
+	%ifdef	AVOIDINT21
 	call	print_al
 	%else
-	%ifdef PROGRESS
-	mov	al, '!'		;if PROGRESS, then print_al, so show err
+	int	0x21		; print_al
+	%endif	;AVOIDINT21
+	%else
+	 %ifdef PROGRESS
+	mov	al, '!'		;if PROGRESS, then print_al, so show anon err
+	%ifdef	AVOIDINT21
 	call	print_al
-	%endif	;PROGRESS
+	%else
+	int	0x21		; print_al
+	%endif	;AVOIDINT21
+	 %endif	;PROGRESS
 	%endif 	;ERRORCODES
 err:	jmp	short $		;hang forever
 	;; ----
@@ -780,7 +831,11 @@ print_string:
 	or	al, al
 	jz	short return
 
+	%ifdef	AVOIDINT21
 	call	print_al
+	%else
+	int	0x21		; print_al
+	%endif	;AVOIDINT21
 	jmp	short print_string
 ;;; 	-------------
 	%ifdef	REPORTSIZES
@@ -818,7 +873,7 @@ dump:
 ;;;------------------------------------------------
 
 %ifdef HEXPRINT			;MUST PRECEDE PRINTAL
-pdh:
+pdxh:
 	call	.dh
 	
 	mov	dh, dl
@@ -839,10 +894,10 @@ pdh:
 ;;; 	----------------
 
 print_dx_hex:
-	call	pdh
+	call	pdxh
 	mov	al, ' '
 	%ifdef	REPORTSIZES
-	%assign	size $-pdh
+	%assign	size $-pdxh
 	%warning "HEXPRINT" added size bytes
 	%endif	;REPORTSIZES
 %endif	;HEXPRINT		;MUST PRECEDE PRINTAL
@@ -886,29 +941,12 @@ disk_read0:
 disk_read:
 ;;; convert LBA in dx to c/h/s in ch/dh/cl
 
-	%ifdef	UNDEFINED
-;;; I used this code originally, works on a suprising pile of CF media
-;;; trashed this for code below using div instruction for better
-;;; media support. changed input registers, but compiled to same size!
-	mov	cx, dx	   	;dx=LBA so dl[0-4]= sec[0-4]
-	shr	cx, 5		;divide by 32 sectors per head
-;;;	shr	cx, 6		;divide by 64 sectors per head
-	mov	dh, cl		;dh= head[0-7]	dh=DONE
-;;;	mov	ch, ch		;ch= cyl[0-1]	ch=DONE
-	mov	cl, dl
-	and	cl, 0x1f	;cl[0-5]= sec[0-5] and cl[6-7]= cyl[8-9](=00b)
-;;;	and	cl, 0x3f	;cl[0-5]= sec[0-5] and cl[6-7]= cyl[8-9](=00b)
-	inc	cl		;sectors start with 1
-	
-	%else
-	
 	div	byte [secs_per_head]
 	xor	cx, cx
 	mov	cl, ah
- 	inc	cl		;sector
+ 	inc	cl		;sectors start with 1
 	mov	dh, al		;head
-	mov	al, dl
-	%endif
+	mov	al, dl		;number of sectors to read
 
 ;;; now ch=2bits of cyl, dh=8bits of head, cl=5bits of sector
 
@@ -980,7 +1018,10 @@ check_a20:
 ;;;  start of initialized data
 ;;;------------------------------------------------
 
+	;; initialized here to safe code space
 highmove_addr:	dd	0x100000 ;pointer to protected mode code destination
+
+;;;------------------------------------------------
 
 ;descriptor needed to set up protected mode
 gdt_desc:
@@ -1009,9 +1050,6 @@ cmdLine:	db	CMDLINE
 cmdLineLen:	equ	$-cmdLine
 	%endif
 
-;;;    hddLBA dd 1   ; start address for kernel - subsequent calls are sequential
-;;; %define	ABS	$
-
 ;;; ---------------------------------------------------
 ;;;
 ;;; Assuming that the object code is copied to the boot disk using
@@ -1024,14 +1062,14 @@ cmdLineLen:	equ	$-cmdLine
 ;;; some of the uninitialized data to zero, looks cleaner on disk, and
 ;;; very helpfully generates assembly errors when we have too much code.
 
-;;; old boot sector magic:
-;;; 	times	510-($-$$)	db	0
-;;;	dw	0xaa55
-;;; new boot sector magic:
 	%assign MBREND	448	;THIS IS OUR COMPLETE CODESPACE
 	%assign REALELLFLAGS MBREND-1
 	%assign	freecodespace	MBREND-($-$$)-1
+	%ifdef	ONETIME
 	%warning "ELL_flags" is at REALELLFLAGS, freecodespace bytes available
+	%else
+	%warning freecodespace bytes available
+	%endif	;ONETIME
  	times	MBREND-($-$$)-1	db	0 ;the -1 is for ELL_flags
 ;;; --------------------------------------------------
 ;;; The ELL_flags byte is in LBA0 at offset 447 (0x1be)
@@ -1042,8 +1080,6 @@ cmdLineLen:	equ	$-cmdLine
 ;;;	1 = boot the other partition once, clearing this bit
 ;;; --------------------------------------------------
 ELL_flags:	db	01110010b ;seven is just a sort of sig right now
-;;;ELL_flags:	db	0x72	;seven is just a sort of sig right now
-;;;ELL_flags:	db	0x73	;seven is just a sort of sig right now
 ;;;------------------------------------------------
 ;;;  start of uninitialized data
 ;;;------------------------------------------------
@@ -1057,7 +1093,7 @@ load_counter:	resw	1	;logical block counter loading protected kernel
 	%endif	;LOADWHOLEPARTITION	;
 
 ;;; We load three sectors, LBA0-LBA2 to this addres in segment 0x0000
-;;; this is an actual copy of the disk MBR, and GPT
+;;; this then, is an actual copy of the disk MBR, and GPT
 
 MBR:
 	times	0x1bf	resb	1
@@ -1072,19 +1108,19 @@ MBR_ELL_flags:	resb	1
 ;;; but does not complain about the trash data after the first 0xEE partition
 ;;;
 ;;; The command line *MUST* start at LBA0:0x1cd, and *MUST* stop at a
-;;; *single* NULL exactly at LBA0:0x1fd.
+;;; *single* NULL exactly at LBA0:0x1fd. The line must be exactly 48 characters.
 ;;;
 ;;; The "root=" command *MUST* be last, and the last charcter before the
 ;;; terminating NULL will be "inc"remented to change the root when the
 ;;; partition 2 kernel is loaded. Pad with *leading* spaces as needed.
 
 command_line:	resb	48+1	;0x1cd thru 0x1fd push a NULL
-	times	0x200-($-MBR)	resb	1
+	times	0x200-($-MBR)	resb	1 ; bump to LBA1
 	
-;;; the GPT (GUID Partition Table) entries (LBA1)
+;;; the GPT (GUID Partition Table) header (LBA1)
 GPT_header:
 GPT_sig:
-	times	0x200	resb	1
+	times	0x200	resb	1 ; bump to LBA2
 
 ;;; the GPT (GUID Partition Table) entries (LBA2)
 GPT_entries:
