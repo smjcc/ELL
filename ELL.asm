@@ -103,24 +103,24 @@
 	%define REPORTSIZES    		; R(0)  report sizes of code blocks
 	%define	CHECKGPTSIG		; R(15) verify the GPT signature
 	%define	CHECKKERNELSIG		; R(15) check the kernel signature
+	%define	SIGSIZE	1		; R Bytes of signatures to check 1,2,or4
 	%define	ERRORCODES		; R(16) show single letter error codes
 	%define	PROGRESS		; R(30) shows loader progress on console
 ;;;	%define KERNELVERSIONSTRING	; R(21) shows kernel version string
 	%define	ONETIMEBOOT		; R(53) support ELL_flags one-time boot
-;;;	%define	A20CHECK		; R(19) verify A20 is enabled
+	%define	A20CHECK		; R(19) verify A20 is enabled
 ;;;	%define	A20CHECKDELAY		; R delay before verifying A20 enabled
 ;;;	%define	A20BY0XEE		; ? smallest A20 enabler
 ;;;	%define	A20BYINT15		; ? BIOS A20 enabler
 ;;;	%define A20BYFASTGATESMALL	; ?
 ;;;	%define A20BYFASTGATESAFE	; ? bigger than above, but also checks
 ;;;	%define	A20CHECKEACH		; R check A20 after each set attempt
-;;;	%define	LOADWHOLEPARTITION	; D(-10) load the whole kernel partition
+	%define	LOADWHOLEPARTITION	; D(-10) load the whole kernel partition
 ;;;	%define	DUMP			; D marginally useful subroutine
 ;;;	%define	HEXPRINT		; D(32) adds print_dx_hex subroutine
 ;;;	%define	CHECKBIOSEXT		; D() check BIOS int13 ah=4x support
 ;;;	%define	CHECKBIOSCHSLIMITS	; D() hack brute force limits discovery
-;;;	%define BLOCKS64		; in case 128 doesn't work for you.
-;;;	%define PRINTINT	0x21	; D(buggy) use int instr for print_al
+;;;	%define BLOCKS64		; D(0) in case 128 doesn't work for you.
 ;;;
 ;;; LOADWHOLEPARTITION loads the entire kernel partition, instead
 ;;; of honoring the kernel paragraph size info, this code is smaller.
@@ -129,6 +129,14 @@
 ;;; don't mess with these, they define code block dependencies
 ;;; ============================================================
 
+	%ifnidn	SIGSIZE, 4
+	 %ifnidn SIGSIZE, 2
+	  %ifnidn SIGSIZE, 1
+	   %error "SIGSIZE must be 1, 2 or 4 only"
+	  %endif
+	 %endif
+	%endif
+	
 	%undef	PRINTAL		;(8)
 	%undef	PRINTSTRING	;(18)
 	%undef	A20SET
@@ -219,14 +227,6 @@ org	0x7c00
 	xor	ax, ax
 	mov	ss, ax
 	mov	ds, ax
-
-%ifdef	PRINTINT	 ;kernel is unhappy with this....
-	;; set int PRINTINT to point to call print_al
-	;; because int is one byte smaller than call
-	mov	word [PRINTINT*4+2], ax
-	mov	word [PRINTINT*4], print_al
-%endif	;PRINTINT
-
 ;;;	cld			; dog do we need this?
 ;;; save the boot device number passed from the BIOS
 	mov	byte [boot_drive], dl
@@ -239,11 +239,7 @@ org	0x7c00
 
 %ifdef	PROGRESS
 	mov	al, OURNAME1	; the boot loader has started
-	%ifdef	PRINTINT
-	int	PRINTINT	; print_al
-	%else
 	call	print_al
-	%endif	;PRINTINT
 %endif	;PROGRESS
 
 ;;; ====================================================
@@ -371,7 +367,7 @@ org	0x7c00
 %ifdef	A20SET	;if needed, we will use at least one method to enable A20
  %ifdef	A20CHECK  ; we will check first if it's already enabled
 	call	check_a20
-	jne	short .a20_is_enabled
+	jne	.a20_is_enabled
  %endif	;A20CHECK
 
  %ifdef	A20BY0XEE
@@ -467,15 +463,19 @@ org	0x7c00
    %endif ;A20CHECKDELAY
   %endif ;A20CHECKEACH
  %endif ;A20CHECK
-%else ;A20SET undefined
- %ifdef A20CHECK
+%else ;A20SET undefined doggy
+	%ifdef A20CHECK
 	call	check_a20
 	je	err_al
  %endif ;A20CHECK
-%endif	;A20SET else
+%endif	;A20SET else not A20SET
 
 .a20_is_enabled:
+	%ifdef	A20CHECK
+	lgdt	[ds:gdt_desc]	;load the global/interupt descriptor table
+	%else
 	lgdt	[gdt_desc]	;load the global/interupt descriptor table
+	%endif ;A20CHECK
 	mov	eax, cr0
 	or	al, 00000001b	; set protected mode bit
 	mov	cr0, eax	; enter protected mode
@@ -500,11 +500,7 @@ org	0x7c00
 ;;; now in UNREAL mode
 	%ifdef	PROGRESS
 	mov	al, OURNAME2	; A20 and UNREAL achieved
-	 %ifdef	PRINTINT
-	int	PRINTINT	; print_al
-	 %else
 	call	print_al
-	 %endif	;PRINTINT
 	%endif	;PROGRESS
 
 ;;; load the MBR, and GPT (LBA0, LBA1, and LBA2)
@@ -514,11 +510,7 @@ org	0x7c00
 	call	disk_read	; load first three sectors into 0:MBR
 	%ifdef	PROGRESS
 	mov	al, OURNAME3	; GPT loaded
-	 %ifdef	PRINTINT
-	int	PRINTINT	; print_al
-	 %else
 	call	print_al
-	 %endif	;PRINTINT
 	%endif	;PROGRESS
 
 %ifdef	CHECKGPTSIG
@@ -526,9 +518,13 @@ org	0x7c00
 %ifdef	ERRORCODES
 	mov	al, GPTSIGERR
 %endif	;ERRORCODES
-;;; 	cmp	dword [GPT_sig], 'EFI '
-;;;	cmp	word [GPT_sig+2], 'I ' ;dog save three bytes
-	cmp	byte [GPT_sig], 'E' ;dog save four bytes
+	%ifidn	 SIGSIZE, 4
+ 	cmp	dword [GPT_sig], 'EFI '	;GPT signature
+	%elifidn SIGSIZE, 2
+	cmp	word [GPT_sig+2], 'I '	;GPT sig, save three bytes
+	%else
+	cmp	byte [GPT_sig], 'E'	;GPT sig, save four bytes
+	%endif
 	jne	err_al
 	%ifdef	REPORTSIZES
 	%assign	size $-.CHECKGPTSIG
@@ -591,11 +587,7 @@ org	0x7c00
 
 .part1:
 	%ifdef PROGRESS
-	 %ifdef	PRINTINT
-	int	PRINTINT	; print_al
-	 %else
 	call	print_al
-	 %endif	;PRINTINT
 	%endif ;PROGRESS
 	%ifdef	REPORTSIZES
 	%assign	size $-.ONETIMEBOOT
@@ -613,11 +605,7 @@ org	0x7c00
 
 %ifdef	PROGRESS
 	mov	al, OURNAME4	; kernel realmode code loaded
-	%ifdef	PRINTINT
-	int	PRINTINT	; print_al
-	%else
 	call	print_al
-	%endif	;PRINTINT
 %endif	;PROGRESS
 
 	push	ds		;0x0000
@@ -626,9 +614,13 @@ org	0x7c00
 
 %ifdef	CHECKKERNELSIG
 	.CHECKKERNELSIG:
-;;;	cmp	dword [0x202], 'HdrS' ;signature
-;;;	cmp	word [0x202+2], 'rS' ;signature dog save three bytes
-	cmp	byte [0x202], 'H' ;signature dog save four bytes
+	%ifidn	 SIGSIZE, 4
+	cmp	dword [0x202], 'HdrS' ;signature
+	%elifidn SIGSIZE, 2
+	cmp	word [0x202+2], 'rS' ;signature, save three bytes
+	%else
+	cmp	byte [0x202], 'H' ;signature, save four bytes
+	%endif
 %ifdef	ERRORCODES
 	mov	al, KSIGERR
 %endif	;ERRORCODES
@@ -731,34 +723,21 @@ org	0x7c00
 	mov	dl, 128 ;blocks per group
 	%endif	;BLOCKS64
 	push	ax     ;save the current LBA
-	call	disk_read0
+	call	disk_read0	;read 128or64 blocks
 
-;;; highmove:
 	mov	esi, 0x20000
 	mov	edi, [highmove_addr]
 	%ifdef	BLOCKS64
-	mov	edx, 512*64/4
+	mov	cx, 512*64/4
 	%else
-	mov	edx, 512*128/4
+	mov	cx, 512*128/4
 	%endif	;BLOCKS64
-.highloop:
-	mov	eax, [ds:esi]
-	mov	[ds:edi], eax
-	add	esi, 4
-	add	edi, 4
-	dec	edx
-	jnz	short .highloop
+	a32	rep movsd	;move them to high memory
 
 	mov	[highmove_addr], edi
 %ifdef	PROGRESS
 	mov	al, '.'
-	%ifdef	PRINTINT
-	pusha
-	int	PRINTINT	; print_al
-	popa
-	%else
-	call	print_al
-	%endif	;PRINTINT
+	call	print_al	;report the progress
 %endif	;PROGRESS
 	pop	ax
 	%ifdef	BLOCKS64
@@ -768,19 +747,15 @@ org	0x7c00
 	%endif	;BLOCKS64
 %ifdef	LOADWHOLEPARTITION
 	cmp	ax, [part1_LLBA]
- 	jng	short .loadloop
+ 	jng	short .loadloop	;and repeat until done
 %else
- 	dec	word [load_counter]
+	dec	word [load_counter]
 	jnz	short .loadloop
 %endif	;LOADWHOLEPARTITION
 
 %ifdef	PROGRESS
 	mov	al, KLAUNCH	; starting the Kernel
-	%ifdef	PRINTINT
-	int	PRINTINT	; print_al
-	%else
 	call	print_al
-	%endif	;PRINTINT
 %endif	;PROGRESS
 kernel_start:
 	cli
@@ -800,19 +775,11 @@ kernel_start:
 
 err_al:
 	%ifdef ERRORCODES
-	 %ifdef	PRINTINT
-	int	PRINTINT	; print_al
-	 %else
 	call	print_al
-	 %endif	;PRINTINT
 	%else
 	 %ifdef PROGRESS
 	mov	al, '!'		;if PROGRESS, then print_al, so show anon err
-	  %ifdef PRINTINT
-	int	PRINTINT	; print_al
-	  %else
 	call	print_al
-	  %endif ;PRINTINT
 	 %endif	;PROGRESS
 	%endif 	;ERRORCODES
 err:	jmp	short $		;hang forever
@@ -827,11 +794,7 @@ print_string:
 	or	al, al
 	jz	short return
 
-	%ifdef	PRINTINT
-	int	PRINTINT	; print_al
-	%else
 	call	print_al
-	%endif	;PRINTINT
 	jmp	short print_string
 ;;; 	-------------
 	%ifdef	REPORTSIZES
@@ -903,7 +866,6 @@ print_al:
 	mov	ah, 0xe
 	mov	bx, 7
 	int	0x10
-return:
 	ret
 ;;;	---
 	%ifdef	REPORTSIZES
@@ -954,6 +916,7 @@ disk_read:
 	%endif	;ERRORCODES
 	jc	short err_al
 
+return:
 	ret
 ;;;	---
 
