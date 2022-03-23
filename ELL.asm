@@ -27,7 +27,7 @@
 ;;; All of both partitions must be within the fisrt 33.5MB of the disk,
 ;;; as we only use a 16bit logical block address (LBA).
 ;;; 
-;;; A byte at offset 447(0x1bf) in LBA0 (MBR) contains two flag bits
+;;; A byte at offset MBREND-1 in LBA0 (MBR) contains two flag bits
 ;;; declaring which kernel will boot by default, and whether to boot
 ;;; the other kernel once, clearing that flag in the MBR (LBA0).
 ;;;
@@ -54,27 +54,41 @@
 ;;; the result should be safely upgradable remotely via dropbear.
 ;;;
 ;;; This code assembles using NASM.
-
-;;; if "CMDLINE" is defined, it will consume MBR space, so keep it short.
-;;; the last byte (presently '3') must increment to become the next
-;;; partition name. So 'root=/dev/sda3' would also work
-;;;	%define	CMDLINE	'root=0803',0
-
-;;; if "CMDLINE1CD" is defined, 48 bytes at LBA0+0x1cd thru LBA0+0x1fd,
-;;; are assumed to contain the kernel command line, with LBA0+0x1fd=NULL
-;;; 
-;;; The command line *MUST* start at LBA0:0x1cd, and *MUST* stop at a
-;;; *single* NULL exactly at LBA0:0x1fd.
 ;;;
-;;; The "root=" command *MUST* be last, and the last charcter before the
-;;; terminating NULL will be "inc"remented to change the root when the
-;;; partition 2 kernel is loaded. Pad with *leading* spaces as needed.
-;;;
-;;; You must write this data into LBA0 using dd or a binary editor or such.
+;;; FYI: search for "doggy" to find potentially unresolved issues.
+;;; 	 search for "dog" to find potential issues.
 ;;; 
-;;; This saves code space in the MBR, and allows for a longer command line.
-	%define	CMDLINE1CD
+;;; if "CMDLINE" is defined as a string, it will consume MBR space,
+;;; so keep it short. the last byte (presently '3') must increment
+;;; to become the next partition name. So 'root=/dev/sda3' would
+;;; also work.
+;;; 
+;;; if "CMDLINEPPT" is defined, the kernel command line is stored at
+;;; the defined byte offset into LBA0 (the MBR), up to the MBR signature
+;;; word at LBA0+0x1fe (with the terminating NULL at LBA0+0x1fd)
+;;; 
+;;; If ONETIMEBOOT is defined, the "root=" command *MUST* be last,
+;;; and the last charcter before the terminating NULL will be bytewise
+;;; "inc"remented to change the root partition when the kernel in
+;;; partition 2 is booted.
+;;;
+;;; All of the command line will be used, so pad with *leading* spaces.
+;;;
+;;; You must write this data into LBA0 on the boot media, using dd or a
+;;; binary editor or such.
+;;; 
+;;; This saves code space in the MBR, and allows for a longer command line,
+;;; by partially crashing the end of the Protective Partition Table (PPT).
+;;; The kernel, and every partition editor tried so far has had no
+;;; complaints. "fdisk" (from util-linux) will call it a "hybrid PPT",
+;;; but does not complain about the trash data after the first 0xEE
+;;; partition. Your mileage may vary.
 
+
+;;; only one of these may be defined
+;;; 	%define	CMDLINE	'root=0803',0
+	%define	CMDLINEPPT	462 	; crash the second partition in the PPT
+	
 	;; progress reporting:
 	%define OURNAME1	'E'	; the boot loader has started
 	%define OURNAME2	'L'	; A20 and UNREAL achieved
@@ -93,7 +107,7 @@
 	%define	KPROTOERR	'P' ;kernel protocol version incompatible
 	%define	KLOADHIERR	'H' ;kernel not to be loaded hi
 	%define GPTSIGERR	'G' ;GPT signature not found
-	%define	INT15FAILED	'I' ;A20BYINT15 BIOS returned with carry set
+;;;	%define	INT15FAILED	'I' ;A20BYINT15 BIOS returned with carry set
 	
 ;;; These define what code is compiled, there isn't room for all of them
 ;;; in our 448 bytes of code space, so choose wisely ;-)
@@ -101,19 +115,20 @@
 ;;; 	'?' means hardware specific '(n)' is the bytes added (last I checked)
 
 	%define REPORTSIZES    		; R(0)  report sizes of code blocks
-	%define	CHECKGPTSIG		; R(15) verify the GPT signature
+;;;	%define	CHECKGPTSIG		; R(15) verify the GPT signature
 	%define	CHECKKERNELSIG		; R(15) check the kernel signature
-	%define	SIGSIZE	1		; R Bytes of signatures to check 1,2,or4
+	%define	SIGSIZE	2		; R Bytes of signatures to check 1,2,or4
 	%define	ERRORCODES		; R(16) show single letter error codes
 	%define	PROGRESS		; R(30) shows loader progress on console
 ;;;	%define KERNELVERSIONSTRING	; R(21) shows kernel version string
 	%define	ONETIMEBOOT		; R(53) support ELL_flags one-time boot
-	%define	A20CHECK		; R(19) verify A20 is enabled
+	%define	A20CHECK		; R(24) verify A20 is enabled
 ;;;	%define	A20CHECKDELAY		; R delay before verifying A20 enabled
+;;;	%define	A20BYKEYBOARD		; ? oldest A20 enabler
 ;;;	%define	A20BY0XEE		; ? smallest A20 enabler
-;;;	%define	A20BYINT15		; ? BIOS A20 enabler
 ;;;	%define A20BYFASTGATESMALL	; ?
 ;;;	%define A20BYFASTGATESAFE	; ? bigger than above, but also checks
+;;;	%define	A20BYINT15		; ? BIOS A20 enabler
 ;;;	%define	A20CHECKEACH		; R check A20 after each set attempt
 	%define	LOADWHOLEPARTITION	; D(-10) load the whole kernel partition
 ;;;	%define	DUMP			; D marginally useful subroutine
@@ -125,6 +140,10 @@
 ;;; LOADWHOLEPARTITION loads the entire kernel partition, instead
 ;;; of honoring the kernel paragraph size info, this code is smaller.
 
+	%define	MBRSIG	510	;offset into the MBR of it's word signature
+	%define	PPT	446	;offset into the MBR of the PPT
+	%define MBREND	PPT	;THIS IS OUR COMPLETE CODESPACE
+	
 ;;; ============================================================
 ;;; don't mess with these, they define code block dependencies
 ;;; ============================================================
@@ -142,9 +161,9 @@
 	%undef	A20SET
 
 	%ifdef	CMDLINE
-	 %ifdef	CMDLINE1CD
-	  %error only one of "CMDLINE" and "CMDLINE1CD" can be defined
-	 %endif	;CMDLINE1CD
+	 %ifdef	CMDLINEPPT
+	  %error only one of "CMDLINE" and "CMDLINEPPT" can be defined
+	 %endif	;CMDLINEPPT
 	%endif	;CMDLINE
 
 	%ifdef	A20CHECKDELAY
@@ -153,6 +172,9 @@
 	 %endif	;A20CHECK
 	%endif	;A20CHECKDELAY
 
+	%ifdef	A20BYKEYBOARD
+	 %define A20SET
+	%endif	;A20BYKEYBOARD
 	%ifdef	A20BY0XEE
 	 %define A20SET
 	%endif	;A20BY0XEE
@@ -200,7 +222,10 @@
 	 %undef	PROGRESS
 	 %undef	CHECKGPTSIG
 	 %undef	CHECKKERNELSIG
+	 %undef	A20SET
 	 %undef	A20CHECK
+	 %undef	A20CHECKDELAY
+	 %undef	A20CHECKEACH
  	 %undef	ONETIMEBOOT
 	 %undef	DUMP
 	%endif	;DIAGNOSTICONLY
@@ -221,8 +246,9 @@
 
 	[BITS 16]
 
-org	0x7c00
-;;; 	cli			; dog do we need this?
+	org	0x7c00
+
+;;; 	cli		; dog do we need this?
 	mov	sp, 0x7c00	; setup stack
 	xor	ax, ax
 	mov	ss, ax
@@ -235,7 +261,14 @@ org	0x7c00
 	mov	ah, 0x08
 	int	0x13
 	and	cl, 0x3f
+	inc	dh
+	%ifdef	UNDEFINED	;dog saved two bytes
 	mov	[secs_per_head], cl
+	mov	[hds_per_cyl], dh
+	%else
+	mov	ch, dh
+	mov	word [secs_per_head], cx
+	%endif
 
 %ifdef	PROGRESS
 	mov	al, OURNAME1	; the boot loader has started
@@ -334,6 +367,9 @@ org	0x7c00
 	xor	dh, dh
 	call	print_dx_hex
 
+	mov	dl, [secs_per_head]
+	call	print_dx_hex
+	
 	mov	al, '!'
 	call	print_al
 	jmp	$
@@ -363,27 +399,63 @@ org	0x7c00
 ;;; -------------------------------------------------------------------
 
 ;;; NOTE: CALLS TO check_a20 CRASH ES!
-	
+
 %ifdef	A20SET	;if needed, we will use at least one method to enable A20
  %ifdef	A20CHECK  ; we will check first if it's already enabled
-	call	check_a20
-	jne	.a20_is_enabled
+	call	check_a20_no_delay
+	jne	a20_is_enabled
  %endif	;A20CHECK
 
- %ifdef	A20BY0XEE
+ %ifdef	A20BYKEYBOARD
+a20bykeyboard:
+	enable_A20:
+        cli
+ 
+        mov     ah,0xAD		;disable keyboard
+        call    a20kbout
+        mov     ah,0xD0		;read from input
+        call    a20kbout
+ 
+.wait:
+        in      al,0x64
+        test    al,1
+        jz      short .wait
+
+        in      al,0x60
+	push	ax
+        mov     ah,0xD1		;write to output
+        call    a20kbout
+	pop	ax
+        or      al,2
+        out     0x60,al		;enable A20
+ 
+        mov     ah,0xAE		;enable keyboard
+        call    a20kbout
+        sti
+
+  %ifdef A20CHECKEACH
+	call	check_a20
+	jne	short a20_is_enabled
+  %endif ;A20CHECKEACH
+	%ifdef	REPORTSIZES
+	%assign	A20BYKEYBOARDSIZE $-a20bykeyboard
+	%endif	;REPORTSIZES
+ %endif	;A20BYKEYBOARD
+
+ %ifdef	A20BY0XEE		;this method rarely works
+	.a20by0xee:
 ;;; the "0xee" method (read/write strobe to 0xee) (al content irrelevent)
 ;;;	out	0xef, al		;RESET (for information only)
 	in	al, 0xee		;Enable A20
 ;;;	out	0xee, al		;Disable A20 (for information only)
   %ifdef A20CHECKEACH
-   %ifdef A20CHECKDELAY
-	call	delay_check_a20
-	jne	short .a20_is_enabled
-   %else
 	call	check_a20
-	jne	short .a20_is_enabled
-   %endif ;A20CHECKDELAY
-  %endif ;A20CHECKEACH	
+	jne	short a20_is_enabled
+  %endif ;A20CHECKEACH
+	%ifdef	REPORTSIZES
+	%assign	size $-.a20by0xee
+	%warning "A20BY0XEE" added size bytes
+	%endif	;REPORTSIZES
  %endif	;A20BY0XEE
 
  %ifdef A20BYFASTGATESMALL
@@ -394,88 +466,58 @@ org	0x7c00
  	or	al, 2
 	out	0x92, al	;Enable A20
   %ifdef A20CHECKEACH
-   %ifdef A20CHECKDELAY
-	call	delay_check_a20
-	jne	short .a20_is_enabled
-   %else
 	call	check_a20
-	jne	short .a20_is_enabled
-   %endif ;A20CHECKDELAY
+	jne	short a20_is_enabled
   %endif ;A20CHECKEACH	
  %endif  ;A20FASTGATESMALL
  %ifdef	A20BYFASTGATESAFE
 ;;; safer use of fast A20 gate
 	in	al, 0x92
 	test	al, 2		;A20 already enabled?
-	jnz	short .a20_is_enabled
+	jnz	short .fastgate_bit2
 
 	or	al, 2		;set A20 enable
 	and	al, 0xFE	;unset RESET
 	out	0x92, al	;enable A20
+.fastgate_bit2:
   %ifdef A20CHECKEACH
-   %ifdef A20CHECKDELAY
-	call	delay_check_a20
-	jne	short .a20_is_enabled
-   %else
 	call	check_a20
-	jne	short .a20_is_enabled
-   %endif ;A20CHECKDELAY
+	jne	short a20_is_enabled
   %endif ;A20CHECKEACH	
  %endif	;A20BYFASTGATESAFE
 
  %ifdef	A20BYINT15
 ;;; BIOS int15 method
-	mov	ax,0x2403	;first check if supported.
-	int	0x15		;maybe this can be left out?
-  %ifdef ERRORCODES
-	mov	al, INT15FAILED
-  %endif ;ERRORCODES
-	jb	err_al	;int15 unsupported?
-
-	cmp	ah, 0
-	jnz	err_al
+;;;	mov	ax,0x2403	;first check if supported.
+;;;	int	0x15		;maybe this can be left out?
+;;;  %ifdef ERRORCODES
+;;;	mov	al, INT15FAILED
+;;;  %endif ;ERRORCODES
+;;;	jb	err_al	;int15 unsupported?
+;;;
+;;;	cmp	ah, 0
+;;;	jnz	err_al
 
 	mov	ax, 0x2401 ; A20 line enable via BIOS
 	int	0x15
-  %ifdef ERRORCODES
-	mov	al, INT15FAILED
-  %endif ;ERRORCODES
-	jc	err_al	;int15 a20 enable failed
-  %ifdef A20CHECKEACH
-   %ifdef A20CHECKDELAY
-	call	delay_check_a20
-	jne	short .a20_is_enabled
-   %else
-	call	check_a20
-	jne	short .a20_is_enabled
-   %endif ;A20CHECKDELAY
-  %endif ;A20CHECKEACH
  %endif ;A20BYINT15
+%endif	;A20SET
 
- %ifdef A20CHECK		;did A20 finally get enabled?
-  %ifndef A20CHECKEACH
-   %ifdef A20CHECKDELAY
-	call	delay_check_a20
-	je	err_al
-   %else
+%ifdef A20CHECK		;did A20 finally get enabled?
 	call	check_a20
 	je	err_al
-   %endif ;A20CHECKDELAY
-  %endif ;A20CHECKEACH
- %endif ;A20CHECK
-%else ;A20SET undefined doggy
-	%ifdef A20CHECK
-	call	check_a20
-	je	err_al
- %endif ;A20CHECK
-%endif	;A20SET else not A20SET
+%endif ;A20CHECK
 
-.a20_is_enabled:
-	%ifdef	A20CHECK
+;;;---------------------------------------------------------------------
+;;;	A20 IS ENABLED		ds=0x0000 es=0 *if* no check_a20 calls
+;;;---------------------------------------------------------------------
+a20_is_enabled:
+	%ifdef	A20CHECK      ;check_a20 crashed es
 	lgdt	[ds:gdt_desc]	;load the global/interupt descriptor table
 	%else
 	lgdt	[gdt_desc]	;load the global/interupt descriptor table
 	%endif ;A20CHECK
+
 	mov	eax, cr0
 	or	al, 00000001b	; set protected mode bit
 	mov	cr0, eax	; enter protected mode
@@ -497,7 +539,10 @@ org	0x7c00
 	mov	es, ax		; segment to load MBR and GPT into
 ;;; 	sti			; finally dog do I need this?
 
-;;; now in UNREAL mode
+;;;---------------------------------------------------
+;;;	now in UNREAL MODE		ds=es=0x0000
+;;;---------------------------------------------------
+
 	%ifdef	PROGRESS
 	mov	al, OURNAME2	; A20 and UNREAL achieved
 	call	print_al
@@ -545,7 +590,7 @@ org	0x7c00
 ;;;	and	al, 11111101b ;clear the bit	;same size code... meh...
 ;;;	mov	byte [MBR_ELL_flags], al
 
-	push	ax
+	push	ax		; save ELL_flags
 	mov	bx, MBR		; offset
 	xor	cx, cx		;0 sec/trk
 	mov	dx, cx		;0 hd
@@ -556,9 +601,10 @@ org	0x7c00
 %ifdef	ERRORCODES
 	mov	al, LBA0WRITEERR
 %endif	;ERRORCODES
-	jc	err_al	; doggy should this be an error? we could still boot..
-
-	pop	ax
+ 	jnc	.write_ok	; should this be an error? we could still boot.
+	call	print_al	;this error is not fatal, dog should it be?
+.write_ok:
+	pop	ax		; restore ELL_flags
 ;;;	mov	al, byte [MBR_ELL_flags] ; push/pop is one byte smaller.
 	xor	al, 00000001b	;toggle the default kernel partition
 
@@ -569,17 +615,17 @@ org	0x7c00
 	%endif ;PROGRESS
 	jz	.part1
 
-	mov	ax, [part2_FLBA]
+	mov	ax, [part2_FLBA] ;change default by copying partition 2 to 1
 	mov	[part1_FLBA], ax
 	%ifdef	LOADWHOLEPARTITION
-	mov	ax, [part2_LLBA]
+	mov	ax, [part2_LLBA] ;and the last LBA if we load the whole thing
  	mov	[part1_LLBA], ax
 	%endif	;LOADWHOLEPARTITION
 	%ifdef	CMDLINE
 	inc	byte [cmdLine+cmdLineLen-2] ;use the other root filesystem
 	%endif
-	%ifdef	CMDLINE1CD
-	inc	byte [command_line+48-1]
+	%ifdef	CMDLINEPPT
+	inc	byte [command_line_end-1]
 	%endif
 	%ifdef PROGRESS
 	mov	al, PART2
@@ -663,7 +709,7 @@ org	0x7c00
 	mov	word [0x210], 0xa1e1	; set LOADHI+USEHEAP+type_of_loader
 %endif	;ERRORCODES
 
-;;; 	if you want play with initrd:
+;;; 	if you want to play with initrd, do it here:
 ;;;	mov	dword [0x218], 0x0000 ;set ramdisk_image
 ;;;	mov	dword [0x21C], 0x0000 ;set ramdisk_size
 
@@ -679,10 +725,10 @@ org	0x7c00
 	mov	si, cmdLine
 	mov	cx, cmdLineLen
 	%endif	;CMDLINE
-	%ifdef	CMDLINE1CD
+	%ifdef	CMDLINEPPT
 	mov	si, command_line
-	mov	cx, 48+1	;command_line plus NULL terminator
-	%endif	;CMDLINE1CD
+	mov	cx, command_line_len
+	%endif	;CMDLINEPPT
 	mov	di, 0xe000
 	rep	movsb ; copies from DS:si to ES:di (0x1e000)
 
@@ -692,7 +738,7 @@ org	0x7c00
 ;;; load the kernel protected mode code to 0x100000
 
 %ifndef	LOADWHOLEPARTITION
- 	mov	edx, [es:0x1f4] ; 16byte pages of protected code to load
+ 	mov	edx, [es:0x1f4] ;num of 16byte pages of protected code to load
 ;;; /32 (pages per block) to get blocks, then by 128 to get 128 block groups
 	%ifdef	BLOCKS64
   	shr	edx, 11		; /2048 = number of 64block groups to load
@@ -711,7 +757,7 @@ org	0x7c00
 
 .notdefaultsize:
 	xor	ah,ah ; can I assume ah=0? set last by bios read status maybe?
-	add	ax, [part1_FLBA] ;compute LBA of start of protected mode code
+	add	ax, [part1_FLBA] ;compute first LBA of protected mode code
 	inc	ax		 ;plus one for the legacy boot sector
 	push	0x2000		 ;segment to load block groups into
 	pop	es		 ;es=0x2000 ds=0x1000
@@ -753,11 +799,11 @@ org	0x7c00
 	jnz	short .loadloop
 %endif	;LOADWHOLEPARTITION
 
-%ifdef	PROGRESS
+	%ifdef	PROGRESS
 	mov	al, KLAUNCH	; starting the Kernel
 	call	print_al
-%endif	;PROGRESS
-kernel_start:
+	%endif	;PROGRESS
+
 	cli
 	mov	ax, 0x1000
 	mov	ds, ax
@@ -783,8 +829,59 @@ err_al:
 	 %endif	;PROGRESS
 	%endif 	;ERRORCODES
 err:	jmp	short $		;hang forever
-	;; ----
+;;	---------------
 
+;;;-------------------------------------------------------------------
+;;;
+;;; READ UP TO 128 LOGICAL BLOCKS USING BIOS INT13 AH=0x02 Cyl/Hds/Sec
+;;;
+;;; on entry:
+;;; ax=FirstLBA dl=CountOfBlocksToRead es:bx=DestinationAddress
+;;; !! assumes ds=0x0000 !!
+;;; crashes: calls BIOS, so who knows... should preserve segment regs
+;;;
+;;; with a 16bit LBA address, we get to the first 33.5MB of HDD
+;;; ( (2**16)*512 = 33554432 ) which should be enough for two kernels,
+;;; one in each of the first two partitions
+;;;
+;;; honors BIOS drive parameters for secs/hd and hds/cyl
+;;;
+;;;-------------------------------------------------------------------
+disk_read0:
+	xor	bx, bx		;null offset into destination segment
+disk_read:
+;;; convert LBA in dx to c/h/s in ch/dh/cl
+
+	div	byte [secs_per_head]
+	xor	cx, cx
+	mov	cl, ah
+ 	inc	cl		;sectors start with 1
+	%ifndef	UNDEFINED	;this should be working now dog added 8 bytes
+	xor	ah, ah
+	div	byte [hds_per_cyl]
+	mov	dh, ah		;head
+	mov	ch, al		;cyl
+	%else
+	mov	dh, al
+	%endif
+	mov	al, dl		;number of sectors to read
+
+;;; now ch=cyl, dh=head, cl=sector (bits 6+7 are 0)
+
+	mov	ah, 0x02	;read drive sectors command
+	mov	dl, [boot_drive]
+	int	0x13
+	%ifdef	ERRORCODES
+	mov	al, HDDERR
+	%endif	;ERRORCODES
+	jc	short err_al
+
+return:
+	ret
+;;;	---
+
+;;;---------------------------------------------------------
+	
 %ifdef PRINTSTRING
 ;;;---------------------------------------------------------
 ;;; on entry ds:si points to NULL terminated string to print
@@ -802,33 +899,6 @@ print_string:
 	%warning "PRINTSTRING" added size bytes
 	%endif	;REPORTSIZES
 %endif ;PRINTSTRING
-;;;------------------------------------------------
-
-%ifdef DUMP
-dump:
-	mov 	ax, 0x1000
-	mov	ds, ax
-	xor	si, si
-	mov	cx, 512
-
-.loop:
-	lodsb
-	mov	ah, 0xe
-	mov	bx, 7
-	push	cx
-	int	0x10
-	pop	cx
-	dec	cx
-	jnz	short .loop
-
-	jmp	short $
-;;;	---------
-	%ifdef	REPORTSIZES
-	%assign	size $-dump
-	%warning "DUMP" added size bytes
-	%endif	;REPORTSIZES
-%endif	;DUMP
-
 ;;;------------------------------------------------
 
 %ifdef HEXPRINT			;MUST PRECEDE PRINTAL
@@ -869,66 +939,46 @@ print_al:
 	ret
 ;;;	---
 	%ifdef	REPORTSIZES
-	%assign	size $-print_al
-	%warning "PRINTAL" added size bytes
+	 %assign	size $-print_al
+	 %warning "PRINTAL" added size bytes
 	%endif	;REPORTSIZES
 %endif	;PRINTAL		;MUST FOLLOW PRINTHEX
-
-
+	
 ;;;------------------------------------------------
-;;;
-;;; READ UP TO 128 LOGICAL BLOCKS USING BIOS INT13 AH=0x02 Cyl/Hds/Sec
-;;;
-;;; on entry:
-;;; ax=FirstLBA dl=CountOfBlocksToRead es:bx=DestinationAddress
-;;; !! assumes ds=0x0000 !!
-;;; crashes: BIOS, so who knows... should preserve segment regs
-;;;
-;;; with a 16bit LBA address, we get to the first 33.5MB of HDD
-;;; ( (2**16)*512 = 33554432 ) which should be enough for two kernels,
-;;; one in each of the first two partitions
-;;;
-;;; valid ranges: sectors: 1-32  heads: 0-255
-;;;		  CountOfBlocksToRead: 1-128 (up to one full 64K segment)
-;;;
-;;; for example: if LBA=34 then cyl=0, head=1, sec=3
-;;;
+	
+%ifdef DUMP
+dump:
+	mov 	ax, 0x1000
+	mov	ds, ax
+	xor	si, si
+	mov	cx, 512
 
-disk_read0:
-	xor	bx, bx		;null offset into destination segment
-disk_read:
-;;; convert LBA in dx to c/h/s in ch/dh/cl
+.loop:
+	lodsb
+	mov	ah, 0xe
+	mov	bx, 7
+	push	cx
+	int	0x10
+	pop	cx
+	dec	cx
+	jnz	short .loop
 
-	div	byte [secs_per_head]
-	xor	cx, cx
-	mov	cl, ah
- 	inc	cl		;sectors start with 1
-	mov	dh, al		;head
-	mov	al, dl		;number of sectors to read
-
-;;; now ch=2bits of cyl, dh=8bits of head, cl=5bits of sector
-
-	mov	ah, 0x02	;read drive sectors command
-	mov	dl, [boot_drive]
-	int	0x13
-	%ifdef	ERRORCODES
-	mov	al, HDDERR
-	%endif	;ERRORCODES
-	jc	short err_al
-
-return:
-	ret
-;;;	---
+	jmp	short $
+;;;	---------
+	%ifdef	REPORTSIZES
+	%assign	size $-dump
+	%warning "DUMP" added size bytes
+	%endif	;REPORTSIZES
+%endif	;DUMP
 
 ;;;------------------------------------------------
 	
 %ifdef A20CHECK
 ;;; upon return, will jne if A20 is enabled, je if A20 is likely disabled
 ;;; crashes ax, es, and maybe cx
-A20CHECK_start:
+check_a20:
  %ifdef A20CHECKDELAY
 ;;; wait to see if it eventually enables
-delay_check_a20:	
  	xor	cx, cx	; arbitrary delay loop value
 .delay_loop:
 	call	check_a20
@@ -937,7 +987,7 @@ delay_check_a20:
 	dec	cx
 	jnz	short .delay_loop
  %endif ;A20CHECKDELAY
-check_a20:
+check_a20_no_delay:
 	xor	ax, ax
 	not	ax
 	mov	es, ax		    ; 0xffff
@@ -968,19 +1018,38 @@ check_a20:
 	ret
  %endif	;UNDEFINED
 	%ifdef	REPORTSIZES
-	%assign	size $-A20CHECK_start
+	%assign	size $-check_a20
 	%warning "A20CHECK" added size bytes
 	%endif	;REPORTSIZES
 %endif	;A20CHECK
 
 ;;;------------------------------------------------
-;;;  start of initialized data
+;;; interface to keyboard controller to enable A20
 ;;;------------------------------------------------
+	%ifdef	A20BYKEYBOARD
+a20kbout:
+.wait:
+        in      al,0x64
+        test    al,2
+        jnz     short .wait
 
-	;; initialized here to safe code space
+	mov	al, ah
+	out     0x64,al
+        ret
+;;;	---
+	%ifdef	REPORTSIZES
+	 %assign size ($-a20kbout)+A20BYKEYBOARDSIZE
+	  %warning "A20BYKEYBOARD" added size bytes
+	 %endif	;REPORTSIZES
+	%endif	;A20BYKEYBOARD
+
+;;;-------------------------------------------------
+;;;		start of initialized data
+;;;-------------------------------------------------
+
 highmove_addr:	dd	0x100000 ;pointer to protected mode code destination
 
-;;;------------------------------------------------
+;;;	---------------------
 
 ;descriptor needed to set up protected mode
 gdt_desc:
@@ -1003,7 +1072,8 @@ gdt:
 	db	0 ; base[24:31]
 gdt_end:
 
-;;;------------------------------------------------
+;;;	---------------------
+
 	%ifdef	CMDLINE
 cmdLine:	db	CMDLINE
 cmdLineLen:	equ	$-cmdLine
@@ -1015,23 +1085,31 @@ cmdLineLen:	equ	$-cmdLine
 ;;; "dd if=disk of=/dev/sd?", and that said disk was previously
 ;;; partitioned as GPT, then a "protective partition table"
 ;;; and the 0xaa55 signature are already there. Therefore, we
-;;; stop at 448 to avoid overwriting the "PPT"
+;;; stop at MBREND to avoid overwriting the "PPT"
 ;;;
 ;;; without the 0xaa55 we don't really need this, but it may "initialize"
 ;;; some of the uninitialized data to zero, looks cleaner on disk, and
 ;;; very helpfully generates assembly errors when we have too much code.
 
-	%assign MBREND	448	;THIS IS OUR COMPLETE CODESPACE
 	%assign REALELLFLAGS MBREND-1
 	%assign	freecodespace	MBREND-($-$$)-1
-	%ifdef	ONETIME
-	%warning "ELL_flags" is at REALELLFLAGS, freecodespace bytes available
+
+	%ifdef	ONETIMEBOOT
+	 %ifdef	CMDLINEPPT
+	  %warning "ELL_flags" is at REALELLFLAGS, "COMMANDLINE" starts at CMDLINEPPT, freecodespace bytes available
+	 %else
+	  %warning "ELL_flags" is at REALELLFLAGS, freecodespace bytes available
+	 %endif
 	%else
-	%warning freecodespace bytes available
-	%endif	;ONETIME
+	 %ifdef CMDLINEPPT
+	  %warning "COMMANDLINE" starts at CMDLINEPPT, freecodespace bytes available
+	 %else
+	  %warning freecodespace bytes available
+	 %endif
+	%endif	;ONETIMEBOOT
  	times	MBREND-($-$$)-1	db	0 ;the -1 is for ELL_flags
 ;;; --------------------------------------------------
-;;; The ELL_flags byte is in LBA0 at offset 447 (0x1be)
+;;; The ELL_flags byte is in LBA0 at offset MBREND-1
 ;;;
 ;;; bits defined so far are:
 ;;;
@@ -1044,8 +1122,12 @@ ELL_flags:	db	01110010b ;seven is just a sort of sig right now
 ;;;------------------------------------------------
  	absolute	$
 
+;;; these three provided by BIOS,
+
 boot_drive:	resb	1	;BIOS provided boot disk device number
+;;; last two must be sequencial in this order as we write them as a word
 secs_per_head:	resb	1	;BIOS provided boot disk parameter
+hds_per_cyl:	resb	1	;BIOS provided boot disk parameter
 
 	%ifndef	LOADWHOLEPARTITION
 load_counter:	resw	1	;logical block counter loading protected kernel
@@ -1055,25 +1137,17 @@ load_counter:	resw	1	;logical block counter loading protected kernel
 ;;; this then, is an actual copy of the disk MBR, and GPT
 
 MBR:
-	times	0x1bf	resb	1
-;;; This is the ELL flag byte at MBREND-1 on disk
+	times	MBREND-1	resb	1
+;;; This is the ELL flag byte on disk
 MBR_ELL_flags:	resb	1
-	times	0x1cd-($-MBR)	resb	1
 
-;;; This is a 48 byte kernel command line string.
-;;; It is crashing the end of the Protective Partition Table (PPT)
-;;; The kernel, and all GPT partition editors I've tried so far
-;;; do not seem to complain about it. "parted" will call it a "hybrid PPT",
-;;; but does not complain about the trash data after the first 0xEE partition
-;;;
-;;; The command line *MUST* start at LBA0:0x1cd, and *MUST* stop at a
-;;; *single* NULL exactly at LBA0:0x1fd. The line must be exactly 48 characters.
-;;;
-;;; The "root=" command *MUST* be last, and the last charcter before the
-;;; terminating NULL will be "inc"remented to change the root when the
-;;; partition 2 kernel is loaded. Pad with *leading* spaces as needed.
+	%ifdef	CMDLINEPPT
+	times	CMDLINEPPT-($-MBR)	resb	1 ;push to CMDLINEPPT
+command_line:	times MBRSIG-($-MBR)-1	resb	1
+command_line_end:	resb	1 		;(the terminating NULL)
+	command_line_len	equ	$-command_line
+	%endif
 
-command_line:	resb	48+1	;0x1cd thru 0x1fd push a NULL
 	times	0x200-($-MBR)	resb	1 ; bump to LBA1
 	
 ;;; the GPT (GUID Partition Table) header (LBA1)
