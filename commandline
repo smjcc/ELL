@@ -1,0 +1,67 @@
+#!/bin/sh
+#
+# read or set the ELL kernel command line on a block device
+
+usage () {
+    echo;
+    echo "$0: read or set the ELL kernel command line on a block device";
+    echo;
+    echo "usage: $0 <blockdevice>";
+    echo "   or: $0 <blockdevice> \"string of text\"";
+    echo;
+};
+
+if [ 0 == $# ] || [ 2 -lt $# ]
+then
+    usage;
+    exit 1;
+fi;
+
+DEV="${1}";
+if [ ! -b "${DEV}" ]
+then
+    DEV="/dev/${DEV}";
+    if [ ! -b "${DEV}" ]
+    then
+	usage;
+	echo "${1} is not a block device"
+	exit 1;
+    fi;
+fi;
+
+# show the current commandline string
+if [ 1 == $# ]
+then
+    TEST1="`dd if=$DEV bs=1 skip=462 count=48 2>/dev/null |tr -d '\0' |wc -c`";
+    TEST2="`dd if=$DEV bs=1 skip=509 count=01 2>/dev/null |tr -d '\0' |wc -c`";
+    if [ 47 != ${TEST1} ] || [ 0 != ${TEST2} ]
+    then
+	echo "command line is uninitialized";
+	exit 2;
+    fi;
+    
+    CMD="`dd if=$DEV bs=1 skip=462 count=47 2>/dev/null`";
+    echo "command line is: \"$CMD\"";
+    exit 0;
+fi;
+
+# else set the new commandline string
+
+CMD="${2}";
+if [ 47 -lt ${#CMD} ]
+then
+    echo "command line is too long (${#CMD}), limited to 47 characters."
+    exit 3;
+fi;
+
+while [ 47 != ${#CMD} ]
+do
+    CMD=" ${CMD}";
+done;
+
+# write the command line
+echo "${CMD}" | dd of=$DEV bs=1 seek=462 count=47 2>/dev/null;
+# append the NULL
+dd if=/dev/null of=$DEV bs=1 seek=509 count=1;
+echo "commandline set to \"${CMD}\"";
+exit 0;
