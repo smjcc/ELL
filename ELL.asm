@@ -22,9 +22,9 @@
 
 ;;; Uses ah=0x02 for int13 disk reads (my olden boxen won't do 0x42)
 ;;;
-;;; Expects a valid GUID Partition Table (GPT), with two valid linux
-;;; kernels in the first two partitions (no filesystems)
-;;; All of both partitions must be within the fisrt 33.5MB of the disk,
+;;; Expects a valid GUID Partition Table (GPT), with a valid linux
+;;; kernel in the first or first two partitions (no filesystems)
+;;; All kernel partitions must be within the fisrt 33.5MB of the disk,
 ;;; as we only use a 16bit logical block address (LBA).
 ;;; 
 ;;; A byte at offset MBREND-1 in LBA0 (MBR) contains two flag bits
@@ -33,7 +33,8 @@
 ;;;
 ;;; The kernels in partitions 1 and 2 are presumed to mount the filesystems
 ;;; in partitions 3 and 4 respectively, and a command line to that effect
-;;; is generated.  No support is provided for initrd.
+;;; is generated. No loading of an initrd is supported.
+;;; I use the kernel built in initramfs when an initrd is needed.
 ;;;
 ;;; 
 ;;; The project here is to boot a kernel in partition 1, mounting
@@ -84,11 +85,19 @@
 ;;; but does not complain about the trash data after the first 0xEE
 ;;; partition. Your mileage may vary.
 
-
-;;; only one of these may be defined
-;;; 	%define	CMDLINE	'root=0803',0
-	%define	CMDLINEPPT	462 	; crash the second partition in the PPT
+;;; Memory Usage:
+;;; 0x?????? - 0x07bff	stack
+;;; 0x007c00 - 0x007dff	ELL (446 bytes,Protective Partition Table, 0x55aa)
+;;; 0x010000 - 0x017fff	Real mode kernel		; size: 32Kb
+;;; 0x018000 - 0x01dfff	kernel heap			; size: 24Kb
+;;; 0x01e000 - 0x01ffff	was command line, now unused	; size: 8Kb
+;;; 0x020000 - 0x02ffff	disk read buffer for high moves ; size: 64Kb
+;;; 0x100000 - +kernlen	protected-mode kernel
 	
+;;; only one of these may be defined
+;;; 	%define	CMDLINE	'root=0803'
+	%define	CMDLINEPPT	462 	; crash last 3 partitions in the PPT
+
 	;; progress reporting:
 	%define OURNAME1	'E'	; the boot loader has started
 	%define OURNAME2	'L'	; A20 and UNREAL achieved
@@ -99,47 +108,51 @@
 	;; then the kernel version is reported (if enabled)
 	;; followed by one '.' for each group of logical blocks loaded
 	%define	KLAUNCH		'*' ;report kernel real mode code being launched
-
+	;; errors:
 	%define	A20ERR		'A' ;failed to enable A20
-	%define LBA0WRITEERR	'W' ;failed to write boot sector
+	%define LBA0WRITEERR	'W' ;failed to write boot sector (ONETIMEBOOT)
 	%define	HDDERR		'R' ;failed to read from disk
-	%define	KSIGERR		'S' ;failed to verify kernel signature 'HdrS'
+	%define GPTSIGERR	'G' ;GPT signature not found
+	%define	KSIGERR		'K' ;kernel signature not found
 	%define	KPROTOERR	'P' ;kernel protocol version incompatible
 	%define	KLOADHIERR	'H' ;kernel not to be loaded hi
-	%define GPTSIGERR	'G' ;GPT signature not found
-;;;	%define	INT15FAILED	'I' ;A20BYINT15 BIOS returned with carry set
 	
-;;; These define what code is compiled, there isn't room for all of them
-;;; in our 448 bytes of code space, so choose wisely ;-)
+;;; These define what code is compiled. There isn't room for all of them
+;;; in our 446 bytes of code space, so choose wisely ;-)
 ;;; the 'R' means recommended, 'D' means diagnostic only
 ;;; 	'?' means hardware specific '(n)' is the bytes added (last I checked)
+;;; 	(because of interplay between these, the byte count is an estimate)
 
 	%define REPORTSIZES    		; R(0)  report sizes of code blocks
-;;;	%define	CHECKGPTSIG		; R(15) verify the GPT signature
+	%define	CHECKGPTSIG		; R(15) verify the GPT signature
 	%define	CHECKKERNELSIG		; R(15) check the kernel signature
 	%define	SIGSIZE	2		; R Bytes of signatures to check 1,2,or4
+;;;	%define CHECKPROTOCOL		; R (12) verify kernel protocol version
+;;;	%define CHECKLOADEDHI		; R (11) verify kernel to be loaded high
 	%define	ERRORCODES		; R(16) show single letter error codes
-	%define	PROGRESS		; R(30) shows loader progress on console
-;;;	%define KERNELVERSIONSTRING	; R(21) shows kernel version string
-	%define	ONETIMEBOOT		; R(53) support ELL_flags one-time boot
+	%define	PROGRESS		; R(30) show loader progress on console
+	%define KERNELVERSIONSTRING	; R(20) show kernel version string
+;;;	%define	ONETIMEBOOT		; R(53) support ELL_flags one-time boot
 	%define	A20CHECK		; R(24) verify A20 is enabled
 ;;;	%define	A20CHECKDELAY		; R delay before verifying A20 enabled
-;;;	%define	A20BYKEYBOARD		; ? oldest A20 enabler
-;;;	%define	A20BY0XEE		; ? smallest A20 enabler
-;;;	%define A20BYFASTGATESMALL	; ?
+;;;	%define	A20BYKEYBOARD		; ?(45) oldest and biggest A20 enabler
+;;;	%define	A20BY0XEE		; ? smallest A20 enabler, rarely works.
+	%define A20BYFASTGATESMALL	; ?
 ;;;	%define A20BYFASTGATESAFE	; ? bigger than above, but also checks
 ;;;	%define	A20BYINT15		; ? BIOS A20 enabler
 ;;;	%define	A20CHECKEACH		; R check A20 after each set attempt
-	%define	LOADWHOLEPARTITION	; D(-10) load the whole kernel partition
+;;;	%define BLOCKS64		; D(0) in case 128 doesn't work for you.
+;;; 	diagnostics:
 ;;;	%define	DUMP			; D marginally useful subroutine
 ;;;	%define	HEXPRINT		; D(32) adds print_dx_hex subroutine
 ;;;	%define	CHECKBIOSEXT		; D() check BIOS int13 ah=4x support
 ;;;	%define	CHECKBIOSCHSLIMITS	; D() hack brute force limits discovery
-;;;	%define BLOCKS64		; D(0) in case 128 doesn't work for you.
-;;;
-;;; LOADWHOLEPARTITION loads the entire kernel partition, instead
-;;; of honoring the kernel paragraph size info, this code is smaller.
-
+ 	
+;;; if you know you're loading a modern kernel, you can safely undefine
+;;; both CHECKPROTOCOL and CHECKLOADEDHI
+	
+	%define ORIGIN	0x7c00	;where the BIOS loads us to
+	%define	STACK	ORIGIN	;also where we put the stack pointer
 	%define	MBRSIG	510	;offset into the MBR of it's word signature
 	%define	PPT	446	;offset into the MBR of the PPT
 	%define MBREND	PPT	;THIS IS OUR COMPLETE CODESPACE
@@ -223,6 +236,7 @@
 	 %undef	CHECKGPTSIG
 	 %undef	CHECKKERNELSIG
 	 %undef	A20SET
+	 %undef	A20BYKEYBOARD
 	 %undef	A20CHECK
 	 %undef	A20CHECKDELAY
 	 %undef	A20CHECKEACH
@@ -245,30 +259,26 @@
 ;;; The BIOS loads it to 0x0000:0x7c00
 
 	[BITS 16]
+	[map all ELL.map]
 
-	org	0x7c00
+	org	ORIGIN
 
-;;; 	cli		; dog do we need this?
-	mov	sp, 0x7c00	; setup stack
+	cli		; dog do we need this?
+	mov	sp, STACK	; setup stack
 	xor	ax, ax
 	mov	ss, ax
 	mov	ds, ax
-;;;	cld			; dog do we need this?
-;;; save the boot device number passed from the BIOS
-	mov	byte [boot_drive], dl
-
-;;; Read Drive Parameters (ah=0x08) to get the sectors per head
+	cld			; do we need this.. maybe..?
+;;; save the boot device number passed from the BIOS in dl
+	push	dx	; we read it in the stack at 0:0x7bfe (svd3byts)
+	
+;;; Read Drive Parameters (ah=0x08) to get the sectors per heads per cylinder
 	mov	ah, 0x08
 	int	0x13
 	and	cl, 0x3f
-	inc	dh
-	%ifdef	UNDEFINED	;dog saved two bytes
-	mov	[secs_per_head], cl
-	mov	[hds_per_cyl], dh
-	%else
+ 	inc	dh		;heads per cyl
 	mov	ch, dh
-	mov	word [secs_per_head], cx
-	%endif
+	push	cx   ;read them in the stack at 0:0x7bc and 0:0x7bd (svd3byts)
 
 %ifdef	PROGRESS
 	mov	al, OURNAME1	; the boot loader has started
@@ -400,38 +410,37 @@
 
 ;;; NOTE: CALLS TO check_a20 CRASH ES!
 
-%ifdef	A20SET	;if needed, we will use at least one method to enable A20
- %ifdef	A20CHECK  ; we will check first if it's already enabled
+%ifdef	A20SET		; if needed, we will use at least one method to enable A20
+ %ifdef	A20CHECK	; we will check first if it's already enabled
 	call	check_a20_no_delay
 	jne	a20_is_enabled
  %endif	;A20CHECK
 
  %ifdef	A20BYKEYBOARD
 a20bykeyboard:
-	enable_A20:
-        cli
- 
-        mov     ah,0xAD		;disable keyboard
-        call    a20kbout
-        mov     ah,0xD0		;read from input
-        call    a20kbout
- 
+;;;  can we trash the whole disable/enable keyboard part?
+;;; don't press keys while booting ;-)
+;;;	cli			;dog
+;;;	mov	ah, 0xAD	;disable keyboard
+;;;	call	a20kbout
+	mov	ah, 0xD0	;read from input
+	call	a20kbout
 .wait:
-        in      al,0x64
-        test    al,1
-        jz      short .wait
+	in	al, 0x64
+	test	al, 1
+	jz	short .wait
 
-        in      al,0x60
+	in	al, 0x60
 	push	ax
-        mov     ah,0xD1		;write to output
-        call    a20kbout
+	mov	ah, 0xD1	;write to output
+	call	a20kbout
 	pop	ax
-        or      al,2
-        out     0x60,al		;enable A20
- 
-        mov     ah,0xAE		;enable keyboard
-        call    a20kbout
-        sti
+	or	al, 2
+	out	0x60, al	;enable A20
+
+;;;	mov	ah, 0xAE	;enable keyboard
+;;;	call	a20kbout
+;;;	sti			;dog
 
   %ifdef A20CHECKEACH
 	call	check_a20
@@ -537,7 +546,7 @@ a20_is_enabled:
  	mov	ds, ax
 	mov	gs, ax
 	mov	es, ax		; segment to load MBR and GPT into
-;;; 	sti			; finally dog do I need this?
+	sti			; finally dog do I need this?
 
 ;;;---------------------------------------------------
 ;;;	now in UNREAL MODE		ds=es=0x0000
@@ -598,9 +607,9 @@ a20_is_enabled:
 	mov	dl, [boot_drive]
 	mov	ax, 0x0301	;write one sector
 	int	0x13		;write the modified MBR sector back
-%ifdef	ERRORCODES
+	%ifdef	ERRORCODES
 	mov	al, LBA0WRITEERR
-%endif	;ERRORCODES
+	%endif	;ERRORCODES
  	jnc	.write_ok	; should this be an error? we could still boot.
 	call	print_al	;this error is not fatal, dog should it be?
 .write_ok:
@@ -617,12 +626,8 @@ a20_is_enabled:
 
 	mov	ax, [part2_FLBA] ;change default by copying partition 2 to 1
 	mov	[part1_FLBA], ax
-	%ifdef	LOADWHOLEPARTITION
-	mov	ax, [part2_LLBA] ;and the last LBA if we load the whole thing
- 	mov	[part1_LLBA], ax
-	%endif	;LOADWHOLEPARTITION
 	%ifdef	CMDLINE
-	inc	byte [cmdLine+cmdLineLen-2] ;use the other root filesystem
+	inc	byte [cmdLine+cmdLineLen-2] ;use the second root filesystem
 	%endif
 	%ifdef	CMDLINEPPT
 	inc	byte [command_line_end-1]
@@ -641,7 +646,7 @@ a20_is_enabled:
 	%endif	;REPORTSIZES
 %endif	;ONETIMEBOOT
 
-;;; load the kernel header and real mode code to 0x1000
+;;; load the kernel header and real mode code to 0x1000:0
 
 	push	0x1000
 	pop	es		; es=0x1000 ds=0x0000
@@ -667,9 +672,9 @@ a20_is_enabled:
 	%else
 	cmp	byte [0x202], 'H' ;signature, save four bytes
 	%endif
-%ifdef	ERRORCODES
+	%ifdef	ERRORCODES
 	mov	al, KSIGERR
-%endif	;ERRORCODES
+	%endif	;ERRORCODES
 	jne	err_al
 	%ifdef	REPORTSIZES
 	%assign	size $-.CHECKKERNELSIG
@@ -677,22 +682,26 @@ a20_is_enabled:
 	%endif	;REPORTSIZES
 %endif	;CHECKKERNELSIG
 
+%ifdef	CHECKPROTOCOL
 	cmp	word [0x206], 0x204	; kernel boot protocol version
-%ifdef	ERRORCODES
+	%ifdef	ERRORCODES
 	mov	al, KPROTOERR
-%endif	;ERRORCODES
+	%endif	;ERRORCODES
 	jb	err_al			; must be protocol v2.04 or greater
-
-%ifdef	ERRORCODES
+%endif	;CHECKPROTOCOL
+	
+%ifdef	CHECKLOADEDHI
+	%ifdef	ERRORCODES
 	mov	al, KLOADHIERR
-%endif	;ERRORCODES
+	%endif	;ERRORCODES
 	test	byte [0x211], 1 	; loadflags: boot protocol option flags
  	jz	err_al			; error if not loaded high: 0x100000
+%endif	;CHECKLOADEDHI
 
 %ifdef	KERNELVERSIONSTRING
 	.KERNELVERSIONSTRING:
 	mov	si, [0x20e]	; pointer to kernel version string
-	add	si, 0x200	; minus kernel boot sector
+	add	si, 0x200	; skip over the kernel boot sector
 	call	print_string	;print the kernel version string
 	%ifdef	REPORTSIZES
 	%assign	size $-.KERNELVERSIONSTRING
@@ -700,7 +709,7 @@ a20_is_enabled:
 	%endif	;REPORTSIZES
 %endif	;KERNELVERSIONSTRING
 ;;;
-;;; 	obligatory kernel setup ( ds = es = 0x1000, 0x0000 on stack)
+;;; 	obligatory kernel setup ( ds = es = 0x1000, and 0x0000 on stack )
 ;;;
 %ifdef	ERRORCODES
 	mov	word [0x210], 0x81e1	; set LOADHI+USEHEAP+type_of_loader
@@ -716,51 +725,55 @@ a20_is_enabled:
 	mov	word [0x224], 0xde00	 ;set heap_end_ptr
 ;;;	mov	byte [0x226], 0x00	 ;set ext_loader_ver
 	mov	byte [0x227], 0x01	 ;set ext_loader_type / bootloader id 11
- 	mov	dword [0x228], 0x1e000 ; set cmd_line_ptr
-
-	pop	ds		       ; ds=0x0000 es=0x1000
-
-;;; copy cmd line
-	%ifdef	CMDLINE
-	mov	si, cmdLine
-	mov	cx, cmdLineLen
-	%endif	;CMDLINE
 	%ifdef	CMDLINEPPT
-	mov	si, command_line
-	mov	cx, command_line_len
+ 	mov	dword [0x228], command_line ; set cmd_line_ptr
+	%else	;CMDLINEPPT
+ 	mov	dword [0x228], cmdLine ; set cmd_line_ptr
 	%endif	;CMDLINEPPT
-	mov	di, 0xe000
-	rep	movsb ; copies from DS:si to ES:di (0x1e000)
+	pop	ds		       ; ds=0x0000 es=0x1000(kernel realmode segment)
 
     ; the protected mode part must be loaded at 0x100000
-    ; load 128 sectors at a time to 0x2000, then copy to 0x100000
+    ; load 128or64 sectors at a time to 0x2000, then copy to 0x100000
 
 ;;; load the kernel protected mode code to 0x100000
 
-%ifndef	LOADWHOLEPARTITION
- 	mov	edx, [es:0x1f4] ;num of 16byte pages of protected code to load
-;;; /32 (pages per block) to get blocks, then by 128 to get 128 block groups
-	%ifdef	BLOCKS64
-  	shr	edx, 11		; /2048 = number of 64block groups to load
-	%else
- 	shr	edx, 12		; /4096 = number of 128block groups to load
-	%endif	;BLOCKS64
-	inc	edx		; +1 potentially partial group
-
-	mov	[load_counter], dx ;save the number of 128block groups to load
-%endif	;not LOADWHOLEPARTITION
  	mov 	al, [es:0x1f1] ; no of blocks in the kernel realmode header
  	or	al, al
- 	jnz	short .notdefaultsize
+ 	jnz	short has_size
 
 	mov	al, 4		;default size
 
-.notdefaultsize:
+has_size:
 	xor	ah,ah ; can I assume ah=0? set last by bios read status maybe?
 	add	ax, [part1_FLBA] ;compute first LBA of protected mode code
-	inc	ax		 ;plus one for the legacy boot sector
-	push	0x2000		 ;segment to load block groups into
-	pop	es		 ;es=0x2000 ds=0x1000
+	inc	ax	;plus one for the legacy boot sector, ax=LBA to load
+
+ 	mov	ecx, [es:0x1f4] ;num of 16byte pages of protected code to load
+;;; /32 (pages per block) to get blocks, then by 128 to get 128 block groups
+	%ifdef	BLOCKS64
+	shr	ecx, 11		; /2048 = number of 64block groups to load
+	%else
+ 	shr	ecx, 12		; /4096 = number of 128block groups to load
+	%endif	;BLOCKS64
+
+	inc	cx		; +1 potentially partial group
+
+;;;	the following can be pulled out as a subroutine should you wish
+;;;	to call it more than once.
+;;;
+;;; 	call	load_high	 ;
+;;;------------------------------------------------------------------------
+;;; On Entry:	ax=starting LBA, cx=number of groups to move
+;;;		[highmove_addr]=destination
+;;; 
+;;; load a group (128or64) of logical blocks, starting from LBA=ax
+;;; into the buffer at 0x2000, then copy them to [highmove_addr]
+;;; repeat for cx number of block groups
+;;;------------------------------------------------------------------------
+
+load_high:
+	push	0x2000		 ;buffer segment to load block groups into
+	pop	es		 ;es=0x2000 ds=0x0000
 
 .loadloop:
 	%ifdef	BLOCKS64
@@ -768,36 +781,36 @@ a20_is_enabled:
 	%else
 	mov	dl, 128 ;blocks per group
 	%endif	;BLOCKS64
+	push	cx	;save the group count
 	push	ax     ;save the current LBA
-	call	disk_read0	;read 128or64 blocks
+	call	disk_read0	;read 128or64 blocks into disk read buffer
 
-	mov	esi, 0x20000
-	mov	edi, [highmove_addr]
+	mov	esi, 0x20000	;the disk read buffer segment
+	mov	edi, dword [highmove_addr]
 	%ifdef	BLOCKS64
 	mov	cx, 512*64/4
 	%else
 	mov	cx, 512*128/4
 	%endif	;BLOCKS64
-	a32	rep movsd	;move them to high memory
+	a32	rep movsd	;move read buffer to high memory
 
-	mov	[highmove_addr], edi
+	mov	dword [highmove_addr], edi
 %ifdef	PROGRESS
 	mov	al, '.'
 	call	print_al	;report the progress
 %endif	;PROGRESS
-	pop	ax
+	pop	ax		; restore the LBA
+	pop	cx		; restore the group count
 	%ifdef	BLOCKS64
 	add	ax, 64		; next LBA to load from
 	%else
 	add	ax, 128		; next LBA to load from
 	%endif	;BLOCKS64
-%ifdef	LOADWHOLEPARTITION
-	cmp	ax, [part1_LLBA]
- 	jng	short .loadloop	;and repeat until done
-%else
-	dec	word [load_counter]
+	dec	cx
 	jnz	short .loadloop
-%endif	;LOADWHOLEPARTITION
+
+;;; 	ret		; end of load_high subroutine (here inlined)
+;;;	-----
 
 	%ifdef	PROGRESS
 	mov	al, KLAUNCH	; starting the Kernel
@@ -856,14 +869,10 @@ disk_read:
 	xor	cx, cx
 	mov	cl, ah
  	inc	cl		;sectors start with 1
-	%ifndef	UNDEFINED	;this should be working now dog added 8 bytes
 	xor	ah, ah
 	div	byte [hds_per_cyl]
 	mov	dh, ah		;head
 	mov	ch, al		;cyl
-	%else
-	mov	dh, al
-	%endif
 	mov	al, dl		;number of sectors to read
 
 ;;; now ch=cyl, dh=head, cl=sector (bits 6+7 are 0)
@@ -886,16 +895,18 @@ return:
 ;;;---------------------------------------------------------
 ;;; on entry ds:si points to NULL terminated string to print
 ;;;---------------------------------------------------------
-print_string:
-	lodsb
-	or	al, al
-	jz	short return
+print_string_loop:	
+	call	print_al	; 3
 
-	call	print_al
-	jmp	short print_string
-;;; 	-------------
+print_string:
+	lodsb			;+1
+	or	al, al		;+2
+	jnz	short print_string_loop	;+2
+
+	ret			;+1=9
+;;; 	---
 	%ifdef	REPORTSIZES
-	%assign	size $-print_string
+	%assign	size $-print_string_loop
 	%warning "PRINTSTRING" added size bytes
 	%endif	;REPORTSIZES
 %endif ;PRINTSTRING
@@ -933,10 +944,10 @@ print_dx_hex:
 
 %ifdef	PRINTAL			;MUST FOLLOW HEXPRINT
 print_al:
-	mov	ah, 0xe
-	mov	bx, 7
-	int	0x10
-	ret
+	mov	ah, 0xe		; 2
+	mov	bx, 7		;+3
+	int	0x10		;+2
+	ret			;+1=8
 ;;;	---
 	%ifdef	REPORTSIZES
 	 %assign	size $-print_al
@@ -948,8 +959,8 @@ print_al:
 	
 %ifdef DUMP
 dump:
-	mov 	ax, 0x1000
-	mov	ds, ax
+	push	0x1000
+	pop	ds
 	xor	si, si
 	mov	cx, 512
 
@@ -989,8 +1000,8 @@ check_a20:
  %endif ;A20CHECKDELAY
 check_a20_no_delay:
 	xor	ax, ax
-	not	ax
-	mov	es, ax		    ; 0xffff
+ 	dec	ax		; 1byte smaller than 'not'
+	mov	es, ax		; 0xffff
 	cmp	word [es:0x7e0e], 0xaa55 ; boot sector ID mirrored in himem?
  %ifdef ERRORCODES
 	mov	al, A20ERR
@@ -1001,7 +1012,7 @@ check_a20_no_delay:
  %ifdef UNDEFINED		;another method, more sure, too big.
 	xor	ax, ax
 ;;;	mov	ds, ax
-	not	ax ; ax = 0xFFFF
+	dec	ax ; ax = 0xFFFF
 	mov	es, ax
  
 	mov	si, 0x0500
@@ -1023,18 +1034,19 @@ check_a20_no_delay:
 	%endif	;REPORTSIZES
 %endif	;A20CHECK
 
-;;;------------------------------------------------
-;;; interface to keyboard controller to enable A20
-;;;------------------------------------------------
+;;;----------------------------------------------------------------
+;;;	    interface to keyboard controller to enable A20
+;;; caution: this can hang on systems without a keyboard controller
+;;;----------------------------------------------------------------
 	%ifdef	A20BYKEYBOARD
 a20kbout:
 .wait:
-        in      al,0x64
-        test    al,2
+        in      al, 0x64
+        test    al, 2
         jnz     short .wait
 
 	mov	al, ah
-	out     0x64,al
+	out     0x64, al
         ret
 ;;;	---
 	%ifdef	REPORTSIZES
@@ -1046,10 +1058,6 @@ a20kbout:
 ;;;-------------------------------------------------
 ;;;		start of initialized data
 ;;;-------------------------------------------------
-
-highmove_addr:	dd	0x100000 ;pointer to protected mode code destination
-
-;;;	---------------------
 
 ;descriptor needed to set up protected mode
 gdt_desc:
@@ -1074,8 +1082,14 @@ gdt_end:
 
 ;;;	---------------------
 
+highmove_addr:	dd	0x100000 ;pointer to protected mode code destination
+
+;;;	---------------------
+
 	%ifdef	CMDLINE
-cmdLine:	db	CMDLINE
+cmdLine:
+	db	CMDLINE
+	db	0
 cmdLineLen:	equ	$-cmdLine
 	%endif
 
@@ -1122,17 +1136,6 @@ ELL_flags:	db	01110010b ;seven is just a sort of sig right now
 ;;;------------------------------------------------
  	absolute	$
 
-;;; these three provided by BIOS,
-
-boot_drive:	resb	1	;BIOS provided boot disk device number
-;;; last two must be sequencial in this order as we write them as a word
-secs_per_head:	resb	1	;BIOS provided boot disk parameter
-hds_per_cyl:	resb	1	;BIOS provided boot disk parameter
-
-	%ifndef	LOADWHOLEPARTITION
-load_counter:	resw	1	;logical block counter loading protected kernel
-	%endif	;LOADWHOLEPARTITION	;
-
 ;;; We load three sectors, LBA0-LBA2 to this addres in segment 0x0000
 ;;; this then, is an actual copy of the disk MBR, and GPT
 
@@ -1153,7 +1156,7 @@ command_line_end:	resb	1 		;(the terminating NULL)
 ;;; the GPT (GUID Partition Table) header (LBA1)
 GPT_header:
 GPT_sig:
-	times	0x200	resb	1 ; bump to LBA2
+	times	(2*0x200)-($-MBR)	resb	1 ; bump to LBA2
 
 ;;; the GPT (GUID Partition Table) entries (LBA2)
 GPT_entries:
@@ -1165,4 +1168,23 @@ part1_LLBA:	resw	1	;0x28 GPT part1 Last LBA
 part2_FLBA:	resw	1	;GPT part2 First LBA
 	times	6	resb	1
 part2_LLBA:	resw	1	;GPT part2 Last LBA
-	times	512-($-GPT_entries)		resb	1
+	times	(2*0x80)+0x20-($-GPT_entries)	resb	1
+part3_FLBA:	resw	1	;GPT part2 First LBA
+	times	6	resb	1
+part3_LLBA:	resw	1	;GPT part2 Last LBA
+;;; 	times	(3*0x200)-($-MBR)	resb	1 ; bump past end of LBA2
+
+;;; these three provided by BIOS,
+
+;;; to save code space these are pushed on the stack early
+;;; and then read in place on the stack when needed
+;;; (push instructions are usually small, so we saved six bytes)
+
+	absolute STACK - 4
+secs_per_head:		;BIOS provided boot disk parameter
+	resb	1
+hds_per_cyl:		;BIOS provided boot disk parameter
+	resb	1
+boot_drive:		;BIOS provided boot disk device number
+	resb	1
+	resb	1
