@@ -1,0 +1,117 @@
+#!/bin/sh
+#
+# read or set the ELL kernel selection and/or ONETIME flag on a block device
+
+usage () {
+    echo;
+    echo "$0: read or set the ELL kernel selection and/or ONETIME flag on a block device";
+    echo;
+    echo "usage: $0 <blockdevice>";
+    echo "   or: $0 <blockdevice> [-o {on|off}] [-k {1|2}]";
+    echo;
+};
+
+STATES="pqrs";
+ONETIME="unset";
+KERNEL="unset";
+PREVONETIME="unset";
+PREVKERNEL="unset";
+
+DEV="${1}";
+if [ ! -b "${DEV}" ]
+then
+    DEV="/dev/${DEV}";
+    if [ ! -b "${DEV}" ]
+    then
+	usage;
+	echo "${1} is not a block device"
+	exit 1;
+    fi;
+fi;
+shift;
+
+while [ 0 -lt "$#" ];
+do
+  ARG="$1";
+  shift;
+
+  if [ '-o' == "${ARG:0:2}" ];
+  then
+    ARG="${ARG:2}";
+    if [ 0 != "${#ARG}" ];
+    then
+	ONETIME="$ARG";
+    else
+      ONETIME="$1";
+      shift;
+    fi;
+    continue;
+  fi;
+
+  if [ '-k' == "${ARG:0:2}" ];
+  then
+    ARG="${ARG:2}";
+    if [ 0 != "${#ARG}" ];
+    then
+      KERNEL="$ARG";
+    else
+      KERNEL="$1";
+      shift;
+    fi;
+    continue;
+  fi;
+
+  usage;
+  exit 1;
+done;
+
+FLAGS="`dd if=${DEV} bs=1 skip=$((0x1bd)) count=1 status=none|tr -d '\0'`" 2>/dev/null;
+case "$FLAGS" in
+    p)	PREVKERNEL=1; PREVONETIME=off; ;;
+    q)	PREVKERNEL=2; PREVONETIME=off; ;;
+    r)	PREVKERNEL=1; PREVONETIME=on;  ;;
+    s)	PREVKERNEL=2; PREVONETIME=on;  ;;
+    *)
+	echo "ERROR: ELL does not appear to be installed on $DEV";
+	exit 1;
+	;;
+esac;
+
+case "$KERNEL" in
+    1);;  2);; unset) KERNEL=${PREVKERNEL}; ;;
+    *)  usage; exit 1; ;;
+esac;
+
+case "$ONETIME" in
+    on);;  off);; unset) ONETIME=${PREVONETIME}; ;;
+    *)  usage; exit 1; ;;
+esac;
+
+if [ "$KERNEL" != "$PREVKERNEL" ]
+then
+    if [ "$ONETIME" != "$PREVONETIME" ]
+    then
+	echo "both KERNEL and ONETIME changed";
+    else
+	echo "KERNEL changed";
+    fi;
+else
+    if [ "$ONETIME" != "$PREVONETIME" ]
+    then
+	echo "ONETIME CHANGED";
+    fi;
+fi;
+
+NFI=0;
+if [ "2" == "$KERNEL" ]; then let NFI=$NFI+1; fi;
+if [ "on" == "$ONETIME" ]; then let NFI=$NFI+2; fi;
+NEWFLAGS="${STATES:NFI:1}";
+
+if [ "$NEWFLAGS" != "$FLAGS" ];
+then
+    echo "$NEWFLAGS" | dd of=${DEV} bs=1 seek=$((0x1bd)) count=1 status=none;
+fi;
+
+echo "KERNEL is $KERNEL";
+echo "ONETIME is $ONETIME";
+exit 0;

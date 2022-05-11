@@ -40,7 +40,7 @@ then
 	exit 2;
     fi;
     
-    CMD="`dd if=$DEV bs=1 skip=462 count=47 2>/dev/null`";
+    CMD="`dd if=$DEV bs=1 skip=462 count=47 2>/dev/null | tr -d '\0'`";
     echo "command line is: \"$CMD\"";
     exit 0;
 fi;
